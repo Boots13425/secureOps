@@ -1,0 +1,11 @@
+@import "tailwindcss";
+@import "./styles/theme.css";
+
+* {
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}

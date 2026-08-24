@@ -1,0 +1,2 @@
+<?xml version="1.0"?>
+<nmaprun><host><status state="up"/><address addr="192.168.1.10" addrtype="ipv4"/><address addr="00:11:22:33:44:55" addrtype="mac" vendor="Example Vendor"/><hostnames><hostname name="lab-pc"/></hostnames></host><host><status state="down"/><address addr="192.168.1.11" addrtype="ipv4"/></host></nmaprun>

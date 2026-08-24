@@ -1,0 +1,68 @@
+/* SecureOps Hub — security operations design system */
+:root {
+  color-scheme: dark;
+  --bg-page: #07111F; --bg-surface: #0D1B2D; --bg-surface-2: #12243A;
+  --bg-hover: #172D45; --bg-sidebar: #081525; --bg-elevated: #142840;
+  --border: #1B344D; --border-strong: #2B4B68;
+  --text-primary: #F1F7FC; --text-secondary: #A9BACB; --text-muted: #71869A;
+  --accent: #16B8D4; --accent-hover: #0E9DB8; --accent-bg: #0A2938;
+  --accent-border: #147A91; --on-accent: #031217;
+  --ok: #35D49A; --ok-bg: #092C27; --ok-text: #7CE7C1;
+  --warn: #F0B84B; --warn-bg: #31260E; --warn-text: #F7D88C;
+  --danger: #F06C75; --danger-bg: #35151D; --danger-text: #FFABB1;
+  --info: #4EA7F5; --info-bg: #0C2944; --info-text: #91C9FA;
+  --chart-1: #31C3DA; --chart-2: #36D6A1; --chart-3: #8D8CF8;
+  --chart-4: #F0B84B; --chart-5: #E676B3; --chart-grid: #173049;
+  --font-sans: "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", ui-monospace, monospace;
+  --radius: 12px; --radius-sm: 8px; --sidebar-w: 248px; --topbar-h: 68px;
+}
+
+body {
+  background: radial-gradient(circle at 82% 0%, rgba(22,184,212,.07), transparent 28rem), linear-gradient(180deg,#081524 0%,var(--bg-page) 42%);
+  color: var(--text-primary); font-family: var(--font-sans);
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11"; -webkit-font-smoothing: antialiased;
+}
+::selection { background: rgba(22,184,212,.3); color: #fff; }
+button, input, select { font: inherit; }
+button, a { -webkit-tap-highlight-color: transparent; }
+button { cursor: pointer; } button:disabled { cursor: not-allowed; }
+input, select { transition: border-color 160ms ease, box-shadow 160ms ease, background-color 160ms ease; }
+input:hover, select:hover { border-color: var(--border-strong); }
+input:focus, select:focus { border-color: var(--accent) !important; box-shadow: 0 0 0 3px rgba(22,184,212,.12); }
+
+.pill { display:inline-flex; align-items:center; gap:6px; padding:3px 9px; border-radius:999px; font-size:11px; font-weight:650; line-height:18px; letter-spacing:.015em; }
+.pill--ok { background:var(--ok-bg); color:var(--ok-text); border:1px solid color-mix(in srgb,var(--ok) 55%,transparent); }
+.pill--warn { background:var(--warn-bg); color:var(--warn-text); border:1px solid color-mix(in srgb,var(--warn) 55%,transparent); }
+.pill--danger { background:var(--danger-bg); color:var(--danger-text); border:1px solid color-mix(in srgb,var(--danger) 55%,transparent); }
+.pill--info { background:var(--info-bg); color:var(--info-text); border:1px solid color-mix(in srgb,var(--info) 50%,transparent); }
+
+.card { position:relative; background:linear-gradient(145deg,rgba(16,34,54,.97),rgba(11,26,43,.97)); border:1px solid var(--border); border-radius:var(--radius); padding:18px 20px; box-shadow:0 12px 36px rgba(0,5,12,.16),inset 0 1px rgba(255,255,255,.018); transition:border-color 180ms ease,transform 180ms ease,box-shadow 180ms ease; }
+.card:hover { border-color:var(--border-strong); }
+.mono { font-family:var(--font-mono); font-size:12.5px; letter-spacing:-.015em; }
+table { border-collapse:separate; border-spacing:0; }
+tbody tr { transition:background-color 140ms ease; }
+tbody tr:hover { background:rgba(49,195,218,.035); }
+thead th { letter-spacing:.08em; }
+::-webkit-scrollbar { width:9px; height:9px; }
+::-webkit-scrollbar-track { background:var(--bg-page); }
+::-webkit-scrollbar-thumb { background:var(--border-strong); border:2px solid var(--bg-page); border-radius:999px; }
+
+@media (max-width:980px) {
+  :root { --sidebar-w:76px; }
+  .sidebar-brand-copy,.sidebar-section-label,.sidebar-item-label,.sidebar-tag,.sidebar-monitor { display:none; }
+  .sidebar-nav-item { justify-content:center; padding-inline:0 !important; }
+}
+@media (max-width:720px) {
+  :root { --sidebar-w:0px; --topbar-h:60px; }
+  .app-sidebar { display:none !important; }
+  .app-topbar { left:0 !important; padding-inline:16px !important; }
+  .topbar-search { max-width:none !important; }
+  .topbar-status,.topbar-profile-copy,.topbar-chevron { display:none !important; }
+  .app-main { margin-left:0 !important; padding:calc(var(--topbar-h) + 18px) 16px 28px !important; overflow-x:hidden; }
+  .card { padding:16px; overflow-x:auto; }
+  .app-main > div > .grid { display:grid; grid-template-columns:minmax(0,1fr) !important; }
+  .app-main > div > .grid > * { grid-column:auto !important; }
+  .app-main h1 { font-size:1.35rem; }
+  table { min-width:720px; }
+}
