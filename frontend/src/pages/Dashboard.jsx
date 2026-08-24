@@ -4,6 +4,7 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContai
 import { format } from 'date-fns'
 import { useDevices, useScanActivity, useScanHistory } from '../hooks/useDevices'
 import { useScanSessions, useStartSession, useStopSession } from '../hooks/useScanSessions'
+import { useServicesSummary } from '../hooks/useServices'
 import MetricCard from '../components/MetricCard'
 import StatusPill from '../components/StatusPill'
 import OsCell from '../components/OsCell'
@@ -57,6 +58,7 @@ export default function Dashboard() {
   const { data: activity } = useScanActivity()
   const { data: history } = useScanHistory()
   const { data: sessions } = useScanSessions()
+  const { data: serviceSummary } = useServicesSummary()
   const startMutation = useStartSession()
   const stopMutation = useStopSession()
   const [duration, setDuration] = useState('')
@@ -282,7 +284,7 @@ export default function Dashboard() {
         )}
       </div>
 
-      <div className="grid grid-cols-3 gap-4 text-sm">
+      <div className="grid grid-cols-4 gap-4 text-sm">
         <div className="card">
           <div className="text-xs text-[var(--text-muted)] mb-1">Last Network Scan</div>
           <div className="text-[var(--text-primary)] font-medium">
@@ -298,6 +300,11 @@ export default function Dashboard() {
           <div className={`font-medium ${recentDevices.length ? 'text-[var(--ok)]' : 'text-[var(--warn)]'}`}>
             {recentDevices.length ? 'Active' : 'Not Started'}
           </div>
+        </div>
+        <div className="card">
+          <div className="text-xs text-[var(--text-muted)] mb-1">Service Intelligence</div>
+          <div className="text-[var(--text-primary)] font-medium">{serviceSummary?.total ?? 0} open exposures</div>
+          <a href="/services" className="text-[11px] text-[var(--accent)] hover:underline">Review products and CPEs</a>
         </div>
       </div>
     </div>

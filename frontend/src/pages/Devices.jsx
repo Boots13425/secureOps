@@ -51,6 +51,7 @@ export default function Devices() {
                 <th className="pb-2 font-medium">Operating system</th>
                 <th className="pb-2 font-medium">Seen via</th>
                 <th className="pb-2 font-medium">Status</th>
+                <th className="pb-2 font-medium">Exposures</th>
                 <th className="pb-2 font-medium">First seen</th>
                 <th className="pb-2 font-medium">Last seen</th>
               </tr>
@@ -69,6 +70,7 @@ export default function Devices() {
                     <span className="pill pill--info">{(d.discovery_sources || []).join(' · ') || '—'}</span>
                   </td>
                   <td className="py-2.5"><StatusPill status={d.status} /></td>
+                  <td className="py-2.5"><span className="pill pill--info">{d.service_count || 0} open</span></td>
                   <td className="py-2.5 text-[var(--text-secondary)] whitespace-nowrap">{timeAgo(d.first_seen)}</td>
                   <td className="py-2.5 text-[var(--text-secondary)] whitespace-nowrap">{timeAgo(d.last_seen)}</td>
                 </tr>

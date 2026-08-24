@@ -24,6 +24,10 @@ class ServiceObservation:
     product: str | None = None
     version: str | None = None
     cpe: str | None = None
+    detection_source: str = "nmap_service_probe"
+    confidence: str = "low"
+    confidence_score: float | None = None
+    enrichment_status: str = "not_enriched"
 
 
 @dataclass
@@ -185,11 +189,17 @@ def enrich_from_fingerprint_xml(path: Path, hosts: list[HostObservation]) -> Non
             if state is None or state.get("state") != "open": continue
             service = port_node.find("service")
             cpe = service.findtext("cpe") if service is not None else None
+            confidence_value = int(service.get("conf", "0")) if service is not None else 0
+            confidence = "high" if confidence_value >= 8 else "medium" if confidence_value >= 5 else "low"
+            method = service.get("method") if service is not None else None
             target.services.append(ServiceObservation(
                 port=int(port_node.get("portid")), protocol=port_node.get("protocol", "tcp"), state="open",
                 name=service.get("name") if service is not None else None,
                 product=service.get("product") if service is not None else None,
                 version=service.get("version") if service is not None else None, cpe=cpe,
+                detection_source="nmap_service_probe" if method == "probed" else "nmap_service_table",
+                confidence=confidence, confidence_score=confidence_value / 10,
+                enrichment_status="cpe_ready" if cpe and confidence != "low" else "not_enriched",
             ))
         osmatch = node.find("os/osmatch")
         if osmatch is not None:
