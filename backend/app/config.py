@@ -17,9 +17,9 @@ class Settings:
     db_user: str = os.getenv("DB_USER", "postgres")
     db_password: str = os.getenv("DB_PASSWORD", "")
     port: int = int(os.getenv("PORT", "8007"))
-    default_subnet: str = os.getenv("SCAN_DEFAULT_SUBNET", "192.168.1.0/24")
+    default_subnet: str = os.getenv("SCAN_DEFAULT_SUBNET", "auto")
     allowed_subnets: tuple[str, ...] = tuple(
-        value.strip() for value in os.getenv("SCAN_ALLOWED_SUBNETS", os.getenv("SCAN_DEFAULT_SUBNET", "192.168.1.0/24")).split(",") if value.strip()
+        value.strip() for value in os.getenv("SCAN_ALLOWED_SUBNETS", "auto").split(",") if value.strip()
     )
     nmap_path: str = os.getenv("NMAP_PATH", "nmap")
     enable_os_detection: bool = os.getenv("NMAP_ENABLE_OS_DETECTION", "false").lower() == "true"

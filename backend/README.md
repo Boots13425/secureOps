@@ -6,7 +6,9 @@ Python/FastAPI service for authorized local-network discovery. It uses a two-pas
 
 1. Install PostgreSQL and Nmap. Ensure `nmap.exe` is on `PATH` or set `NMAP_PATH`.
 2. Copy `.env.example` to `.env` at the project root or in this folder and set the PostgreSQL credentials.
-3. Restrict `SCAN_ALLOWED_SUBNETS` to networks you are explicitly authorized to scan.
+3. Keep `SCAN_DEFAULT_SUBNET=auto` and `SCAN_ALLOWED_SUBNETS=auto` to select the
+   currently connected default private network at scan time. Explicit CIDRs can
+   still be configured when an organization requires a fixed allowlist.
 4. Install and start:
 
 ```powershell
@@ -22,6 +24,11 @@ OS detection is best-effort and stores its confidence separately. Running the
 backend from an elevated terminal improves raw-packet and OS-detection results.
 Slow hosts are fingerprinted in bounded parallel jobs (`NMAP_PARALLEL_HOSTS`)
 so their timeouts do not accumulate across the inventory.
+
+Automatic mode recalculates the active IPv4 network for every new scan, so
+changing Wi-Fi or Ethernet networks does not require editing `.env`. Only a
+directly connected private network can be selected automatically; arbitrary
+remote or public targets remain rejected.
 
 ## API
 

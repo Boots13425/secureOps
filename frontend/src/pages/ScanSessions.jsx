@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { RefreshCw, Square, RotateCcw, Radar } from 'lucide-react'
-import { useScanSessions, useStartSession, useStopSession, useResumeSession } from '../hooks/useScanSessions'
+import { useScanNetwork, useScanSessions, useStartSession, useStopSession, useResumeSession } from '../hooks/useScanSessions'
 import EmptyState from '../components/EmptyState'
 import { timeAgo } from '../utils/time'
 
@@ -20,6 +20,7 @@ function modeLabel(session) {
 
 export default function ScanSessions() {
   const { data: sessions, isLoading } = useScanSessions()
+  const { data: network } = useScanNetwork()
   const startMutation = useStartSession()
   const stopMutation = useStopSession()
   const resumeMutation = useResumeSession()
@@ -45,12 +46,12 @@ export default function ScanSessions() {
 
       <div className="card flex items-end gap-3 flex-wrap">
         <div className="flex flex-col gap-1">
-          <label className="text-xs text-[var(--text-muted)]">Subnet (optional)</label>
+          <label className="text-xs text-[var(--text-muted)]">Subnet (auto-detected)</label>
           <input
             type="text"
             value={subnet}
             onChange={(e) => setSubnet(e.target.value)}
-            placeholder="Default LAN subnet"
+            placeholder={network?.selected ? `Auto: ${network.selected}` : 'Detecting active network…'}
             className="bg-[var(--bg-surface-2)] border border-[var(--border)] rounded-[var(--radius-sm)] px-3 py-2 text-sm text-[var(--text-primary)] placeholder:text-[var(--text-muted)] outline-none focus:border-[var(--accent)] w-56"
           />
         </div>

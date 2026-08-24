@@ -1,10 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { getScanSessions, startScanSession, stopScanSession, resumeScanSession } from '../api/client'
+import { getScanNetwork, getScanSessions, startScanSession, stopScanSession, resumeScanSession } from '../api/client'
 
 // Kept fresh by useScanSocket (WebSocket push) invalidating on every
 // SESSION_* event — no polling needed.
 export function useScanSessions() {
   return useQuery({ queryKey: ['scan-sessions'], queryFn: getScanSessions })
+}
+
+export function useScanNetwork() {
+  return useQuery({ queryKey: ['scan-network'], queryFn: getScanNetwork, refetchInterval: 10_000 })
 }
 
 function useSessionMutation(mutationFn) {

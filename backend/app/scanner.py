@@ -12,6 +12,7 @@ from tempfile import TemporaryDirectory
 from concurrent.futures import ThreadPoolExecutor
 
 from .config import settings
+from .network import connected_ipv4_networks, current_default_network
 
 
 @dataclass
@@ -42,13 +43,22 @@ class ScanStopped(Exception):
     pass
 
 
-def validate_authorized_subnet(value: str) -> str:
-    requested = ipaddress.ip_network(value, strict=False)
+def validate_authorized_subnet(value: str | None = None) -> str:
+    configured_default = settings.default_subnet.strip().lower()
+    if not value or value.strip().lower() == "auto":
+        requested = current_default_network()
+    else:
+        requested = ipaddress.ip_network(value, strict=False)
     if requested.version != 4:
         raise ValueError("Layer 1 currently supports authorized IPv4 subnets only")
-    allowed = [ipaddress.ip_network(item, strict=False) for item in settings.allowed_subnets]
+    auto_allowed = any(item.lower() == "auto" for item in settings.allowed_subnets)
+    allowed = [ipaddress.ip_network(item, strict=False) for item in settings.allowed_subnets if item.lower() != "auto"]
+    if configured_default != "auto":
+        allowed.append(ipaddress.ip_network(configured_default, strict=False))
+    if auto_allowed:
+        allowed.extend(connected_ipv4_networks())
     if not any(requested.subnet_of(scope) for scope in allowed):
-        raise ValueError(f"Subnet {requested} is outside SCAN_ALLOWED_SUBNETS")
+        raise ValueError(f"Subnet {requested} is not a currently connected or explicitly allowed private network")
     return str(requested)
 
 

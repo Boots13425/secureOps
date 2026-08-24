@@ -10,6 +10,7 @@ from .config import settings
 from .database import connection, initialize_schema
 from .scan_service import ScanCoordinator
 from .scanner import validate_authorized_subnet
+from .network import connected_ipv4_networks
 from .schemas import AssetUpdate, ScanStart
 
 
@@ -73,9 +74,15 @@ def history(): return {"data": repository.scan_history()}
 def sessions(): return {"data": repository.list_sessions()}
 
 
+@app.get("/api/v1/scan/network")
+def scan_network():
+    networks = [str(network) for network in connected_ipv4_networks()]
+    return {"data": {"selected": networks[0] if networks else None, "connected": networks}}
+
+
 @app.post("/api/v1/scan/sessions", status_code=202)
 def start_session(payload: ScanStart):
-    try: subnet = validate_authorized_subnet(payload.subnet or settings.default_subnet)
+    try: subnet = validate_authorized_subnet(payload.subnet)
     except ValueError as exc: raise HTTPException(400, str(exc)) from exc
     session = repository.create_session(subnet, payload.durationMinutes)
     coordinator.start(session); hub.publish("SESSION_STARTED", session)
@@ -93,7 +100,9 @@ def stop_session(session_id: str):
 def resume_session(session_id: str):
     previous = repository.get_session(session_id)
     if not previous: raise HTTPException(404, "Scan session not found")
-    session = repository.create_session(previous["subnet"], previous["duration_minutes"])
+    try: subnet = validate_authorized_subnet(previous["subnet"])
+    except ValueError as exc: raise HTTPException(400, str(exc)) from exc
+    session = repository.create_session(subnet, previous["duration_minutes"])
     coordinator.start(session); hub.publish("SESSION_STARTED", session)
     return session
 

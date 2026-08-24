@@ -45,6 +45,11 @@ export async function getScanSessions() {
   return data.data
 }
 
+export async function getScanNetwork() {
+  const { data } = await http.get('/scan/network')
+  return data.data
+}
+
 export async function startScanSession({ subnet, durationMinutes } = {}) {
   const body = {}
   if (subnet) body.subnet = subnet

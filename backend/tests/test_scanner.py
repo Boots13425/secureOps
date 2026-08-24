@@ -1,5 +1,7 @@
 import unittest
+import ipaddress
 from pathlib import Path
+from unittest.mock import patch
 
 from app.scanner import enrich_from_fingerprint_xml, parse_discovery_xml, validate_authorized_subnet
 
@@ -21,8 +23,11 @@ class ScannerXmlTests(unittest.TestCase):
         self.assertEqual(hosts[0].services[0].cpe, "cpe:/o:microsoft:windows_10")
 
     def test_subnet_scope_rejects_unauthorized_targets(self):
-        self.assertEqual(validate_authorized_subnet("192.168.1.23/24"), "192.168.1.0/24")
-        with self.assertRaises(ValueError): validate_authorized_subnet("8.8.8.0/24")
+        connected = [ipaddress.ip_network("192.168.1.0/24")]
+        with patch("app.scanner.connected_ipv4_networks", return_value=connected), patch("app.scanner.current_default_network", return_value=connected[0]):
+            self.assertEqual(validate_authorized_subnet(), "192.168.1.0/24")
+            self.assertEqual(validate_authorized_subnet("192.168.1.23/24"), "192.168.1.0/24")
+            with self.assertRaises(ValueError): validate_authorized_subnet("8.8.8.0/24")
 
 
 if __name__ == "__main__": unittest.main()
