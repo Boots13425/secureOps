@@ -1,7 +1,7 @@
 import threading
 
 from . import repository
-from .scanner import ScanStopped, scan_two_pass
+from .scanner import ScanStopped, discover_hosts, fingerprint_hosts
 
 
 class ScanCoordinator:
@@ -30,9 +30,13 @@ class ScanCoordinator:
     def _run(self, session, stop):
         session_id = session["id"]
         try:
-            hosts = scan_two_pass(session["subnet"], stop)
+            hosts = discover_hosts(session["subnet"], stop)
             if stop.is_set(): return
             repository.store_scan_results(session_id, session["subnet"], hosts)
+            self.publish("SESSION_TICK", {"id": session_id, "phase": "discovered", "devices_found": len(hosts)})
+            fingerprint_hosts(hosts, stop)
+            if stop.is_set(): return
+            repository.store_scan_results(session_id, session["subnet"], hosts, record_activity=False)
             result = repository.finish_session(session_id, "COMPLETED", len(hosts))
             self.publish("SESSION_COMPLETED", result)
         except ScanStopped:

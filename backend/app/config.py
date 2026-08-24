@@ -24,6 +24,9 @@ class Settings:
     nmap_path: str = os.getenv("NMAP_PATH", "nmap")
     enable_os_detection: bool = os.getenv("NMAP_ENABLE_OS_DETECTION", "false").lower() == "true"
     scan_timeout_seconds: int = int(os.getenv("SCAN_TIMEOUT_SECONDS", "300"))
+    fingerprint_top_ports: int = int(os.getenv("NMAP_TOP_PORTS", "75"))
+    host_timeout_seconds: int = int(os.getenv("NMAP_HOST_TIMEOUT_SECONDS", "20"))
+    parallel_fingerprint_hosts: int = int(os.getenv("NMAP_PARALLEL_HOSTS", "6"))
     cors_origins: tuple[str, ...] = tuple(
         value.strip() for value in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if value.strip()
     )

@@ -67,7 +67,7 @@ def finish_session(session_id, status, devices_found=0, error=None):
         return _serialize(row)
 
 
-def store_scan_results(session_id, subnet, hosts: list[HostObservation]):
+def store_scan_results(session_id, subnet, hosts: list[HostObservation], record_activity=True):
     observed_at = datetime.now(timezone.utc)
     seen_ids = []
     with connection() as conn:
@@ -89,11 +89,18 @@ def store_scan_results(session_id, subnet, hosts: list[HostObservation]):
                 event_type, message = "ASSET_DISCOVERED", "New unknown asset discovered"
             seen_ids.append(asset["asset_id"])
             observation = conn.execute("""INSERT INTO asset_observations(asset_id,scan_id,observed_at,ip_address,mac_address,hostname,vendor,os_family,os_confidence)
-              VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING observation_id""", (asset["asset_id"],session_id,observed_at,host.ip_address,host.mac_address,host.hostname,host.vendor,host.os_family,host.os_confidence)).fetchone()
+              VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+              ON CONFLICT (asset_id,scan_id) DO UPDATE SET ip_address=EXCLUDED.ip_address, mac_address=COALESCE(EXCLUDED.mac_address,asset_observations.mac_address),
+                hostname=COALESCE(EXCLUDED.hostname,asset_observations.hostname), vendor=COALESCE(EXCLUDED.vendor,asset_observations.vendor),
+                os_family=COALESCE(EXCLUDED.os_family,asset_observations.os_family), os_confidence=COALESCE(EXCLUDED.os_confidence,asset_observations.os_confidence)
+              RETURNING observation_id""", (asset["asset_id"],session_id,observed_at,host.ip_address,host.mac_address,host.hostname,host.vendor,host.os_family,host.os_confidence)).fetchone()
             for service in host.services:
                 conn.execute("""INSERT INTO observed_services(observation_id,port,protocol,state,service_name,product,version,cpe)
-                  VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""", (observation["observation_id"],service.port,service.protocol,service.state,service.name,service.product,service.version,service.cpe))
-            conn.execute("INSERT INTO scan_activity(scan_id,event_type,message,detail) VALUES (%s,%s,%s,%s)", (session_id,event_type,message,f"{host.ip_address} · {host.hostname or 'unresolved'} · {len(host.services)} services"))
+                  VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                  ON CONFLICT (observation_id,port,protocol) DO UPDATE SET state=EXCLUDED.state, service_name=EXCLUDED.service_name,
+                    product=EXCLUDED.product, version=EXCLUDED.version, cpe=EXCLUDED.cpe""", (observation["observation_id"],service.port,service.protocol,service.state,service.name,service.product,service.version,service.cpe))
+            if record_activity:
+                conn.execute("INSERT INTO scan_activity(scan_id,event_type,message,detail) VALUES (%s,%s,%s,%s)", (session_id,event_type,message,f"{host.ip_address} · {host.hostname or 'unresolved'} · {len(host.services)} services"))
         if seen_ids:
             conn.execute("UPDATE assets SET status='missing', updated_at=now() WHERE ip_address <<= %s::cidr AND asset_id <> ALL(%s::uuid[])", (subnet, seen_ids))
         else:

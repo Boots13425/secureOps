@@ -16,6 +16,13 @@ python run.py
 
 The schema is additive and initialized at startup. The service listens on port 8007 by default.
 
+Discovery combines local ARP, ICMP, and common TCP probes. Fingerprinting is
+bounded to the top ports configured by `NMAP_TOP_PORTS` (75 by default), while
+OS detection is best-effort and stores its confidence separately. Running the
+backend from an elevated terminal improves raw-packet and OS-detection results.
+Slow hosts are fingerprinted in bounded parallel jobs (`NMAP_PARALLEL_HOSTS`)
+so their timeouts do not accumulate across the inventory.
+
 ## API
 
 - `GET /health`
