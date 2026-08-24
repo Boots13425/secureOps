@@ -54,6 +54,31 @@ def devices(status: str | None = None, device_type: str | None = Query(default=N
     return {"data": repository.list_assets(status, device_type)}
 
 
+@app.get("/api/v1/devices/{asset_id}/services")
+def asset_services(asset_id: str):
+    return {"data": repository.list_services(asset_id=asset_id)}
+
+
+@app.get("/api/v1/services")
+def services(
+    asset_id: str | None = None,
+    confidence: str | None = None,
+    enrichment_status: str | None = None,
+    port: int | None = Query(default=None, ge=1, le=65535),
+    q: str | None = Query(default=None, max_length=120),
+):
+    if confidence and confidence not in {"high", "medium", "low"}:
+        raise HTTPException(400, "confidence must be high, medium, or low")
+    if enrichment_status and enrichment_status not in {"not_enriched", "cpe_ready", "enriched"}:
+        raise HTTPException(400, "invalid enrichment status")
+    return {"data": repository.list_services(asset_id, confidence, enrichment_status, port, q)}
+
+
+@app.get("/api/v1/services/summary")
+def services_summary():
+    return {"data": repository.service_summary()}
+
+
 @app.patch("/api/v1/devices/{asset_id}")
 def patch_device(asset_id: str, payload: AssetUpdate):
     result = repository.update_asset(asset_id, payload.model_dump())

@@ -21,6 +21,10 @@ class ScannerXmlTests(unittest.TestCase):
         self.assertEqual(hosts[0].os_confidence, 0.92)
         self.assertEqual(hosts[0].services[0].port, 445)
         self.assertEqual(hosts[0].services[0].cpe, "cpe:/o:microsoft:windows_10")
+        self.assertEqual(hosts[0].services[0].confidence, "high")
+        self.assertEqual(hosts[0].services[0].confidence_score, 1.0)
+        self.assertEqual(hosts[0].services[0].detection_source, "nmap_service_probe")
+        self.assertEqual(hosts[0].services[0].enrichment_status, "cpe_ready")
 
     def test_subnet_scope_rejects_unauthorized_targets(self):
         connected = [ipaddress.ip_network("192.168.1.0/24")]

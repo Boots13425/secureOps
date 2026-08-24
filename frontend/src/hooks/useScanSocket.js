@@ -39,12 +39,16 @@ export function useScanSocket() {
           queryClient.invalidateQueries({ queryKey: ['scan-sessions'] })
           queryClient.invalidateQueries({ queryKey: ['scan-activity'] })
           queryClient.invalidateQueries({ queryKey: ['devices'] })
+          queryClient.invalidateQueries({ queryKey: ['services'] })
+          queryClient.invalidateQueries({ queryKey: ['services-summary'] })
         }
 
         if (data.event === 'SESSION_TICK') {
           queryClient.invalidateQueries({ queryKey: ['devices'] })
           queryClient.invalidateQueries({ queryKey: ['scan-history'] })
           queryClient.invalidateQueries({ queryKey: ['scan-sessions'] })
+          queryClient.invalidateQueries({ queryKey: ['services'] })
+          queryClient.invalidateQueries({ queryKey: ['services-summary'] })
         }
       }
 

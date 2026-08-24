@@ -60,6 +60,54 @@ CREATE TABLE IF NOT EXISTS observed_services (
   UNIQUE (observation_id, port, protocol)
 );
 
+ALTER TABLE observed_services ADD COLUMN IF NOT EXISTS detection_source varchar(32) NOT NULL DEFAULT 'nmap_service_probe';
+ALTER TABLE observed_services ADD COLUMN IF NOT EXISTS confidence varchar(8) NOT NULL DEFAULT 'low';
+ALTER TABLE observed_services ADD COLUMN IF NOT EXISTS confidence_score numeric(4,3);
+ALTER TABLE observed_services ADD COLUMN IF NOT EXISTS enrichment_status varchar(20) NOT NULL DEFAULT 'not_enriched';
+ALTER TABLE observed_services ADD COLUMN IF NOT EXISTS observed_at timestamptz NOT NULL DEFAULT now();
+
+CREATE TABLE IF NOT EXISTS services (
+  service_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  asset_id uuid NOT NULL REFERENCES assets(asset_id) ON DELETE CASCADE,
+  port integer NOT NULL CHECK (port BETWEEN 1 AND 65535),
+  protocol varchar(8) NOT NULL,
+  state varchar(20) NOT NULL DEFAULT 'open',
+  service_name text,
+  product text,
+  version text,
+  cpe text,
+  detection_source varchar(32) NOT NULL DEFAULT 'nmap_service_probe',
+  confidence varchar(8) NOT NULL DEFAULT 'low' CHECK (confidence IN ('high','medium','low')),
+  confidence_score numeric(4,3) CHECK (confidence_score BETWEEN 0 AND 1),
+  enrichment_status varchar(20) NOT NULL DEFAULT 'not_enriched' CHECK (enrichment_status IN ('not_enriched','cpe_ready','enriched')),
+  first_seen timestamptz NOT NULL,
+  last_seen timestamptz NOT NULL,
+  last_observation_id uuid REFERENCES asset_observations(observation_id) ON DELETE SET NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (asset_id, port, protocol)
+);
+CREATE INDEX IF NOT EXISTS idx_services_asset ON services (asset_id);
+CREATE INDEX IF NOT EXISTS idx_services_exposure ON services (port, protocol, state);
+CREATE INDEX IF NOT EXISTS idx_services_enrichment ON services (enrichment_status, confidence);
+
+-- Preserve and surface fingerprints collected before the persistent Layer 2
+-- inventory was introduced. Their confidence remains low because older rows
+-- did not retain Nmap's confidence metadata.
+WITH ranked_services AS (
+  SELECT o.asset_id, os.observation_id, os.port, os.protocol, os.state,
+         os.service_name, os.product, os.version, os.cpe,
+         min(o.observed_at) OVER (PARTITION BY o.asset_id, os.port, os.protocol) AS first_seen,
+         max(o.observed_at) OVER (PARTITION BY o.asset_id, os.port, os.protocol) AS last_seen,
+         row_number() OVER (PARTITION BY o.asset_id, os.port, os.protocol ORDER BY o.observed_at DESC) AS recency
+  FROM observed_services os
+  JOIN asset_observations o ON o.observation_id = os.observation_id
+)
+INSERT INTO services(asset_id,port,protocol,state,service_name,product,version,cpe,detection_source,confidence,confidence_score,enrichment_status,first_seen,last_seen,last_observation_id)
+SELECT asset_id,port,protocol,state,service_name,product,version,cpe,'nmap_service_probe','low',NULL,'not_enriched',first_seen,last_seen,observation_id
+FROM ranked_services WHERE recency=1
+ON CONFLICT (asset_id,port,protocol) DO NOTHING;
+
 CREATE TABLE IF NOT EXISTS scan_activity (
   id bigserial PRIMARY KEY,
   scan_id uuid REFERENCES scan_sessions(id) ON DELETE CASCADE,

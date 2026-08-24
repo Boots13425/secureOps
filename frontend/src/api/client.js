@@ -45,6 +45,21 @@ export async function getScanSessions() {
   return data.data
 }
 
+export async function getServices(filters = {}) {
+  const params = {}
+  if (filters.confidence) params.confidence = filters.confidence
+  if (filters.enrichmentStatus) params.enrichment_status = filters.enrichmentStatus
+  if (filters.port) params.port = filters.port
+  if (filters.query) params.q = filters.query
+  const { data } = await http.get('/services', { params })
+  return data.data
+}
+
+export async function getServicesSummary() {
+  const { data } = await http.get('/services/summary')
+  return data.data
+}
+
 export async function getScanNetwork() {
   const { data } = await http.get('/scan/network')
   return data.data

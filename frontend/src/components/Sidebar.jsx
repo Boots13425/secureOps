@@ -11,12 +11,14 @@ import {
   Bell,
   FileText,
   ScrollText,
+  ServerCog,
 } from 'lucide-react'
 import NextScanWidget from './NextScanWidget'
 
 const navItems = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/devices', label: 'Devices', icon: HardDrive },
+  { to: '/services', label: 'Services & CPE', icon: ServerCog },
   { to: '/discovery', label: 'Discovery / Scan', icon: ScanLine },
   { to: '/sessions', label: 'Scan Sessions', icon: Radar },
   { to: '/settings', label: 'Settings', icon: Settings },
