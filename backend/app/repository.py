@@ -241,3 +241,44 @@ def findings_summary():
 def update_finding_status(finding_id, status):
     with connection() as conn:
         return _serialize(conn.execute("UPDATE findings SET status=%s,updated_at=now() WHERE finding_id=%s RETURNING *", (status,finding_id)).fetchone())
+
+
+def list_vulnerabilities(status=None, severity=None, confidence=None, query=None):
+    clauses, params = [], []
+    if status: clauses.append("sv.status=%s"); params.append(status)
+    if severity: clauses.append("upper(v.cvss_base_severity)=%s"); params.append(severity.upper())
+    if confidence: clauses.append("sv.match_confidence=%s"); params.append(confidence)
+    if query:
+        clauses.append("(v.cve_id ILIKE %s OR v.description ILIKE %s OR a.hostname ILIKE %s OR host(a.ip_address) ILIKE %s OR s.product ILIKE %s OR s.cpe ILIKE %s)")
+        params.extend([f"%{query}%"] * 6)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    sql = f"""SELECT sv.service_vulnerability_id,sv.service_id,sv.cve_id,sv.matched_cpe,sv.match_confidence,sv.match_wording,
+      sv.match_reason,sv.applicability_status,sv.status,sv.first_seen,sv.last_seen,sv.last_checked_at,
+      v.description,v.published_at,v.modified_at,v.vuln_status,v.cvss_version,v.cvss_base_score,v.cvss_base_severity,v.cvss_vector,v.nvd_last_refreshed_at,
+      s.asset_id,s.port,s.protocol,s.service_name,s.product,s.version,s.cpe,host(a.ip_address) AS ip_address,a.hostname,a.device_type
+      FROM service_vulnerabilities sv JOIN vulnerabilities v ON v.cve_id=sv.cve_id JOIN services s ON s.service_id=sv.service_id
+      JOIN assets a ON a.asset_id=s.asset_id {where}
+      ORDER BY v.cvss_base_score DESC NULLS LAST,sv.match_confidence,sv.last_seen DESC"""
+    with connection() as conn:
+        return [_serialize(row) for row in conn.execute(sql, params).fetchall()]
+
+
+def vulnerabilities_summary():
+    with connection() as conn:
+        return _serialize(conn.execute("""SELECT count(*) FILTER (WHERE sv.status='active') AS active_matches,
+          count(*) FILTER (WHERE sv.status='active' AND upper(v.cvss_base_severity)='CRITICAL') AS critical,
+          count(*) FILTER (WHERE sv.status='active' AND upper(v.cvss_base_severity)='HIGH') AS high,
+          count(*) FILTER (WHERE sv.status='active' AND sv.match_confidence='high') AS high_confidence,
+          count(DISTINCT s.asset_id) FILTER (WHERE sv.status='active') AS affected_assets,
+          max(v.nvd_last_refreshed_at) AS last_refreshed_at
+          FROM service_vulnerabilities sv JOIN vulnerabilities v ON v.cve_id=sv.cve_id JOIN services s ON s.service_id=sv.service_id""").fetchone())
+
+
+def update_vulnerability_match_status(match_id, status):
+    with connection() as conn:
+        return _serialize(conn.execute("UPDATE service_vulnerabilities SET status=%s,last_checked_at=now() WHERE service_vulnerability_id=%s RETURNING *", (status,match_id)).fetchone())
+
+
+def list_enrichment_runs(limit=20):
+    with connection() as conn:
+        return [_serialize(row) for row in conn.execute("SELECT * FROM nvd_enrichment_runs ORDER BY queued_at DESC LIMIT %s", (limit,)).fetchall()]

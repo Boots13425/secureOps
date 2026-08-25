@@ -19,3 +19,7 @@ class AssetUpdate(BaseModel):
 
 class FindingUpdate(BaseModel):
     status: Literal["open", "accepted", "resolved"]
+
+
+class VulnerabilityMatchUpdate(BaseModel):
+    status: Literal["active", "dismissed", "resolved"]

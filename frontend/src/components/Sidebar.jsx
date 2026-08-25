@@ -13,6 +13,7 @@ import {
   ScrollText,
   ServerCog,
   ShieldAlert,
+  DatabaseZap,
 } from 'lucide-react'
 import NextScanWidget from './NextScanWidget'
 
@@ -21,6 +22,7 @@ const navItems = [
   { to: '/devices', label: 'Devices', icon: HardDrive },
   { to: '/services', label: 'Services & CPE', icon: ServerCog },
   { to: '/findings', label: 'Exposure Findings', icon: ShieldAlert },
+  { to: '/vulnerabilities', label: 'CVE Intelligence', icon: DatabaseZap },
   { to: '/discovery', label: 'Discovery / Scan', icon: ScanLine },
   { to: '/sessions', label: 'Scan Sessions', icon: Radar },
   { to: '/settings', label: 'Settings', icon: Settings },
@@ -68,7 +70,7 @@ function LaterPhaseItem({ label, icon: Icon, tag }) {
 export default function Sidebar() {
   return (
     <aside
-      className="app-sidebar fixed left-0 top-0 z-30 h-full flex flex-col border-r border-[var(--border)] bg-[linear-gradient(180deg,var(--bg-sidebar),#07111f)] px-3 py-5 shadow-[12px_0_40px_rgba(0,5,12,.14)]"
+      className="app-sidebar fixed left-0 top-0 z-30 h-full flex flex-col overflow-y-auto border-r border-[var(--border)] bg-[linear-gradient(180deg,var(--bg-sidebar),#07111f)] px-3 py-5 shadow-[12px_0_40px_rgba(0,5,12,.14)]"
       style={{ width: 'var(--sidebar-w)' }}
     >
       <div className="flex items-center gap-3 px-2 mb-8">

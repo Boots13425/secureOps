@@ -11,7 +11,8 @@ from .database import connection, initialize_schema
 from .scan_service import ScanCoordinator
 from .scanner import validate_authorized_subnet
 from .network import connected_ipv4_networks
-from .schemas import AssetUpdate, FindingUpdate, ScanStart
+from .schemas import AssetUpdate, FindingUpdate, ScanStart, VulnerabilityMatchUpdate
+from .nvd import coordinator as nvd_coordinator
 
 
 class EventHub:
@@ -101,6 +102,38 @@ def patch_finding(finding_id: str, payload: FindingUpdate):
     if not result: raise HTTPException(404, "Finding not found")
     hub.publish("FINDING_UPDATED", result)
     return {"data": result}
+
+
+@app.get("/api/v1/vulnerabilities")
+def vulnerabilities(
+    status: str | None = "active", severity: str | None = None,
+    confidence: str | None = None, q: str | None = Query(default=None, max_length=120),
+):
+    return {"data": repository.list_vulnerabilities(status, severity, confidence, q)}
+
+
+@app.get("/api/v1/vulnerabilities/summary")
+def vulnerabilities_summary():
+    return {"data": repository.vulnerabilities_summary()}
+
+
+@app.patch("/api/v1/vulnerabilities/{match_id}")
+def patch_vulnerability_match(match_id: str, payload: VulnerabilityMatchUpdate):
+    result = repository.update_vulnerability_match_status(match_id, payload.status)
+    if not result: raise HTTPException(404, "Vulnerability match not found")
+    hub.publish("VULNERABILITY_UPDATED", result)
+    return {"data": result}
+
+
+@app.get("/api/v1/enrichment/runs")
+def enrichment_runs(limit: int = Query(20, ge=1, le=100)):
+    return {"data": repository.list_enrichment_runs(limit)}
+
+
+@app.post("/api/v1/enrichment/refresh", status_code=202)
+def refresh_enrichment():
+    job_id = nvd_coordinator.schedule(None, "manual")
+    return {"enrichment_run_id": job_id, "status": "queued"}
 
 
 @app.patch("/api/v1/devices/{asset_id}")

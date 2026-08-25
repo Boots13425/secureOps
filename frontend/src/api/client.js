@@ -81,6 +81,36 @@ export async function updateFindingStatus({ findingId, status }) {
   return data.data
 }
 
+export async function getVulnerabilities(filters = {}) {
+  const params = {}
+  if (filters.status) params.status = filters.status
+  if (filters.severity) params.severity = filters.severity
+  if (filters.confidence) params.confidence = filters.confidence
+  if (filters.query) params.q = filters.query
+  const { data } = await http.get('/vulnerabilities', { params })
+  return data.data
+}
+
+export async function getVulnerabilitiesSummary() {
+  const { data } = await http.get('/vulnerabilities/summary')
+  return data.data
+}
+
+export async function updateVulnerabilityStatus({ matchId, status }) {
+  const { data } = await http.patch(`/vulnerabilities/${matchId}`, { status })
+  return data.data
+}
+
+export async function getEnrichmentRuns() {
+  const { data } = await http.get('/enrichment/runs', { params: { limit: 10 } })
+  return data.data
+}
+
+export async function refreshEnrichment() {
+  const { data } = await http.post('/enrichment/refresh')
+  return data
+}
+
 export async function getScanNetwork() {
   const { data } = await http.get('/scan/network')
   return data.data
