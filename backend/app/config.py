@@ -27,6 +27,9 @@ class Settings:
     fingerprint_top_ports: int = int(os.getenv("NMAP_TOP_PORTS", "75"))
     host_timeout_seconds: int = int(os.getenv("NMAP_HOST_TIMEOUT_SECONDS", "20"))
     parallel_fingerprint_hosts: int = int(os.getenv("NMAP_PARALLEL_HOSTS", "6"))
+    exposure_checks_enabled: bool = os.getenv("NMAP_EXPOSURE_CHECKS_ENABLED", "true").lower() == "true"
+    exposure_check_timeout_seconds: int = int(os.getenv("NMAP_EXPOSURE_CHECK_TIMEOUT_SECONDS", "25"))
+    parallel_exposure_hosts: int = int(os.getenv("NMAP_EXPOSURE_PARALLEL_HOSTS", "4"))
     cors_origins: tuple[str, ...] = tuple(
         value.strip() for value in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if value.strip()
     )

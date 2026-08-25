@@ -30,6 +30,16 @@ changing Wi-Fi or Ethernet networks does not require editing `.env`. Only a
 directly connected private network can be selected automatically; arbitrary
 remote or public targets remain rejected.
 
+## Layer 3 exposure checks
+
+The default exposure profile is an explicit allowlist: `smb-protocols`,
+`ftp-anon`, `ssl-cert`, and `rdp-enum-encryption`. A check runs only when its
+matching service is observed. Telnet, HTTP-without-HTTPS, and newly observed
+administrative ports are evaluated from stored service/history evidence.
+`ssl-enum-ciphers` is intentionally excluded from the customer default because
+it is intrusive/noisy. Raw check output is stored for evidence and findings
+never assert a CVE that was not established by a later intelligence layer.
+
 ## API
 
 - `GET /health`

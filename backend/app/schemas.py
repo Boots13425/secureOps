@@ -15,3 +15,7 @@ class ScanStart(BaseModel):
 class AssetUpdate(BaseModel):
     status: AssetStatus | None = None
     device_type: DeviceType | None = None
+
+
+class FindingUpdate(BaseModel):
+    status: Literal["open", "accepted", "resolved"]

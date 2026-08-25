@@ -65,4 +65,5 @@ thead th { letter-spacing:.08em; }
   .app-main > div > .grid > * { grid-column:auto !important; }
   .app-main h1 { font-size:1.35rem; }
   table { min-width:720px; }
+  .finding-detail-grid { grid-template-columns:minmax(0,1fr) !important; }
 }

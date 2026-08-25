@@ -1,0 +1,2 @@
+<?xml version="1.0"?>
+<nmaprun><host><status state="up"/><address addr="192.168.1.10" addrtype="ipv4"/><ports><port protocol="tcp" portid="445"><state state="open"/><script id="smb-protocols" output="Dialects: NT LM 0.12 (SMBv1) [dangerous, but default]"><table key="dialects"><elem>NT LM 0.12 (SMBv1) [dangerous, but default]</elem></table></script></port></ports></host></nmaprun>

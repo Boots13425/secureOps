@@ -41,6 +41,8 @@ export function useScanSocket() {
           queryClient.invalidateQueries({ queryKey: ['devices'] })
           queryClient.invalidateQueries({ queryKey: ['services'] })
           queryClient.invalidateQueries({ queryKey: ['services-summary'] })
+          queryClient.invalidateQueries({ queryKey: ['findings'] })
+          queryClient.invalidateQueries({ queryKey: ['findings-summary'] })
         }
 
         if (data.event === 'SESSION_TICK') {
@@ -49,6 +51,13 @@ export function useScanSocket() {
           queryClient.invalidateQueries({ queryKey: ['scan-sessions'] })
           queryClient.invalidateQueries({ queryKey: ['services'] })
           queryClient.invalidateQueries({ queryKey: ['services-summary'] })
+          queryClient.invalidateQueries({ queryKey: ['findings'] })
+          queryClient.invalidateQueries({ queryKey: ['findings-summary'] })
+        }
+
+        if (data.event === 'FINDING_UPDATED') {
+          queryClient.invalidateQueries({ queryKey: ['findings'] })
+          queryClient.invalidateQueries({ queryKey: ['findings-summary'] })
         }
       }
 

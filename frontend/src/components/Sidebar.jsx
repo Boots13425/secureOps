@@ -12,6 +12,7 @@ import {
   FileText,
   ScrollText,
   ServerCog,
+  ShieldAlert,
 } from 'lucide-react'
 import NextScanWidget from './NextScanWidget'
 
@@ -19,6 +20,7 @@ const navItems = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/devices', label: 'Devices', icon: HardDrive },
   { to: '/services', label: 'Services & CPE', icon: ServerCog },
+  { to: '/findings', label: 'Exposure Findings', icon: ShieldAlert },
   { to: '/discovery', label: 'Discovery / Scan', icon: ScanLine },
   { to: '/sessions', label: 'Scan Sessions', icon: Radar },
   { to: '/settings', label: 'Settings', icon: Settings },
