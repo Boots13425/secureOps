@@ -60,6 +60,27 @@ export async function getServicesSummary() {
   return data.data
 }
 
+export async function getFindings(filters = {}) {
+  const params = {}
+  if (filters.status) params.status = filters.status
+  if (filters.severity) params.severity = filters.severity
+  if (filters.confidence) params.confidence = filters.confidence
+  if (filters.checkId) params.check_id = filters.checkId
+  if (filters.query) params.q = filters.query
+  const { data } = await http.get('/findings', { params })
+  return data.data
+}
+
+export async function getFindingsSummary() {
+  const { data } = await http.get('/findings/summary')
+  return data.data
+}
+
+export async function updateFindingStatus({ findingId, status }) {
+  const { data } = await http.patch(`/findings/${findingId}`, { status })
+  return data.data
+}
+
 export async function getScanNetwork() {
   const { data } = await http.get('/scan/network')
   return data.data

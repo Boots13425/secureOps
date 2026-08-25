@@ -1,9 +1,11 @@
 import ipaddress
 from datetime import datetime, timezone
 from uuid import UUID
+from psycopg.types.json import Jsonb
 
 from .database import connection
 from .scanner import HostObservation
+from .findings import evaluate_host
 
 
 def _serialize(row):
@@ -87,6 +89,8 @@ def store_scan_results(session_id, subnet, hosts: list[HostObservation], record_
                 asset = conn.execute("""INSERT INTO assets(ip_address,mac_address,vendor,hostname,device_type,os_family,os_confidence,status,first_seen,last_seen)
                   VALUES (%s,%s,%s,%s,%s,%s,%s,'unknown',%s,%s) RETURNING *""", (host.ip_address,host.mac_address,host.vendor,host.hostname,host.device_type,host.os_family,host.os_confidence,observed_at,observed_at)).fetchone()
                 event_type, message = "ASSET_DISCOVERED", "New unknown asset discovered"
+                host.is_new_asset = True
+            host.asset_id = str(asset["asset_id"])
             seen_ids.append(asset["asset_id"])
             observation = conn.execute("""INSERT INTO asset_observations(asset_id,scan_id,observed_at,ip_address,mac_address,hostname,vendor,os_family,os_confidence)
               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
@@ -95,20 +99,24 @@ def store_scan_results(session_id, subnet, hosts: list[HostObservation], record_
                 os_family=COALESCE(EXCLUDED.os_family,asset_observations.os_family), os_confidence=COALESCE(EXCLUDED.os_confidence,asset_observations.os_confidence)
               RETURNING observation_id""", (asset["asset_id"],session_id,observed_at,host.ip_address,host.mac_address,host.hostname,host.vendor,host.os_family,host.os_confidence)).fetchone()
             for service in host.services:
+                existing_service = conn.execute("SELECT service_id FROM services WHERE asset_id=%s AND port=%s AND protocol=%s", (asset["asset_id"],service.port,service.protocol)).fetchone()
                 conn.execute("""INSERT INTO observed_services(observation_id,port,protocol,state,service_name,product,version,cpe,detection_source,confidence,confidence_score,enrichment_status,observed_at)
                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                   ON CONFLICT (observation_id,port,protocol) DO UPDATE SET state=EXCLUDED.state, service_name=EXCLUDED.service_name,
                     product=EXCLUDED.product, version=EXCLUDED.version, cpe=EXCLUDED.cpe, detection_source=EXCLUDED.detection_source,
                     confidence=EXCLUDED.confidence, confidence_score=EXCLUDED.confidence_score, enrichment_status=EXCLUDED.enrichment_status,
                     observed_at=EXCLUDED.observed_at""", (observation["observation_id"],service.port,service.protocol,service.state,service.name,service.product,service.version,service.cpe,service.detection_source,service.confidence,service.confidence_score,service.enrichment_status,observed_at))
-                conn.execute("""INSERT INTO services(asset_id,port,protocol,state,service_name,product,version,cpe,detection_source,confidence,confidence_score,enrichment_status,first_seen,last_seen,last_observation_id)
+                current_service = conn.execute("""INSERT INTO services(asset_id,port,protocol,state,service_name,product,version,cpe,detection_source,confidence,confidence_score,enrichment_status,first_seen,last_seen,last_observation_id)
                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
                   ON CONFLICT (asset_id,port,protocol) DO UPDATE SET state=EXCLUDED.state, service_name=COALESCE(EXCLUDED.service_name,services.service_name),
                     product=COALESCE(EXCLUDED.product,services.product), version=COALESCE(EXCLUDED.version,services.version), cpe=COALESCE(EXCLUDED.cpe,services.cpe),
                     detection_source=EXCLUDED.detection_source, confidence=EXCLUDED.confidence, confidence_score=EXCLUDED.confidence_score,
                     enrichment_status=CASE WHEN EXCLUDED.cpe IS NULL THEN services.enrichment_status ELSE EXCLUDED.enrichment_status END,
-                    last_seen=EXCLUDED.last_seen, last_observation_id=EXCLUDED.last_observation_id, updated_at=now()""",
-                    (asset["asset_id"],service.port,service.protocol,service.state,service.name,service.product,service.version,service.cpe,service.detection_source,service.confidence,service.confidence_score,service.enrichment_status,observed_at,observed_at,observation["observation_id"]))
+                    last_seen=EXCLUDED.last_seen, last_observation_id=EXCLUDED.last_observation_id, updated_at=now()
+                  RETURNING service_id""",
+                    (asset["asset_id"],service.port,service.protocol,service.state,service.name,service.product,service.version,service.cpe,service.detection_source,service.confidence,service.confidence_score,service.enrichment_status,observed_at,observed_at,observation["observation_id"])).fetchone()
+                service.service_id = str(current_service["service_id"])
+                service.is_new = existing_service is None and not host.is_new_asset
             if record_activity:
                 conn.execute("INSERT INTO scan_activity(scan_id,event_type,message,detail) VALUES (%s,%s,%s,%s)", (session_id,event_type,message,f"{host.ip_address} · {host.hostname or 'unresolved'} · {len(host.services)} services"))
         if seen_ids:
@@ -120,6 +128,19 @@ def store_scan_results(session_id, subnet, hosts: list[HostObservation], record_
 def list_activity(limit):
     with connection() as conn:
         rows = conn.execute("SELECT id,message,detail,created_at AS timestamp,event_type FROM scan_activity ORDER BY created_at DESC LIMIT %s", (limit,)).fetchall()
+        return [_serialize(row) for row in rows]
+
+
+def add_activity(session_id, event_type, message, detail=None):
+    with connection() as conn:
+        conn.execute("INSERT INTO scan_activity(scan_id,event_type,message,detail) VALUES (%s,%s,%s,%s)", (session_id,event_type,message,detail))
+
+
+def list_exposure_checks(session_id):
+    with connection() as conn:
+        rows = conn.execute("""SELECT r.check_run_id,r.scan_id,r.asset_id,r.check_id,r.port,r.protocol,r.status,r.output,r.executed_at,
+          host(a.ip_address) AS ip_address,a.hostname FROM exposure_check_runs r JOIN assets a ON a.asset_id=r.asset_id
+          WHERE r.scan_id=%s ORDER BY a.ip_address,r.port,r.check_id""", (session_id,)).fetchall()
         return [_serialize(row) for row in rows]
 
 
@@ -157,3 +178,66 @@ def service_summary():
           count(*) FILTER (WHERE state='open' AND confidence='high') AS high_confidence
           FROM services""").fetchone()
         return _serialize(row)
+
+
+def store_exposure_results(session_id, hosts: list[HostObservation]):
+    observed_at = datetime.now(timezone.utc)
+    created = 0
+    with connection() as conn:
+        for host in hosts:
+            if not host.asset_id:
+                continue
+            for check in host.exposure_checks:
+                row = conn.execute("""INSERT INTO exposure_check_runs(scan_id,asset_id,check_id,port,protocol,status,output,structured_output,executed_at)
+                  VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING check_run_id""",
+                  (session_id,host.asset_id,check.check_id,check.port,check.protocol,check.status,check.output,Jsonb(check.structured_output),observed_at)).fetchone()
+                check.check_run_id = str(row["check_run_id"])
+            for candidate in evaluate_host(host, observed_at):
+                finding = conn.execute("""INSERT INTO findings(finding_key,asset_id,service_id,check_id,title,evidence,severity,confidence,why_it_matters,recommendation,source,status,first_seen,last_seen)
+                  VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'network_exposure_check','open',%s,%s)
+                  ON CONFLICT (finding_key) DO UPDATE SET service_id=EXCLUDED.service_id, evidence=EXCLUDED.evidence,
+                    severity=EXCLUDED.severity, confidence=EXCLUDED.confidence, why_it_matters=EXCLUDED.why_it_matters,
+                    recommendation=EXCLUDED.recommendation, status=CASE WHEN findings.status='resolved' THEN 'open' ELSE findings.status END,
+                    last_seen=EXCLUDED.last_seen, updated_at=now()
+                  RETURNING finding_id, (xmax = 0) AS inserted""",
+                  (candidate.key,candidate.asset_id,candidate.service_id,candidate.check_id,candidate.title,candidate.evidence,candidate.severity,candidate.confidence,candidate.why_it_matters,candidate.recommendation,observed_at,observed_at)).fetchone()
+                conn.execute("""INSERT INTO finding_observations(finding_id,scan_id,check_run_id,evidence,observed_at)
+                  VALUES (%s,%s,%s,%s,%s) ON CONFLICT (finding_id,scan_id) DO UPDATE SET check_run_id=EXCLUDED.check_run_id,evidence=EXCLUDED.evidence,observed_at=EXCLUDED.observed_at""",
+                  (finding["finding_id"],session_id,candidate.check_run_id,candidate.evidence,observed_at))
+                created += int(finding["inserted"])
+        if created:
+            conn.execute("INSERT INTO scan_activity(scan_id,event_type,message,detail) VALUES (%s,'FINDINGS_UPDATED','Security exposure findings updated',%s)", (session_id,f"{created} new finding(s)"))
+    return created
+
+
+def list_findings(status=None, severity=None, confidence=None, check_id=None, query=None):
+    clauses, params = [], []
+    if status: clauses.append("f.status=%s"); params.append(status)
+    if severity: clauses.append("f.severity=%s"); params.append(severity)
+    if confidence: clauses.append("f.confidence=%s"); params.append(confidence)
+    if check_id: clauses.append("f.check_id=%s"); params.append(check_id)
+    if query:
+        clauses.append("(f.title ILIKE %s OR f.evidence ILIKE %s OR a.hostname ILIKE %s OR host(a.ip_address) ILIKE %s)")
+        params.extend([f"%{query}%"] * 4)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    sql = f"""SELECT f.*, host(a.ip_address) AS ip_address, a.hostname, a.device_type,
+      s.port, s.protocol, s.service_name, s.product, s.version
+      FROM findings f JOIN assets a ON a.asset_id=f.asset_id LEFT JOIN services s ON s.service_id=f.service_id
+      {where} ORDER BY CASE f.severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END, f.last_seen DESC"""
+    with connection() as conn:
+        return [_serialize(row) for row in conn.execute(sql, params).fetchall()]
+
+
+def findings_summary():
+    with connection() as conn:
+        return _serialize(conn.execute("""SELECT count(*) FILTER (WHERE status='open') AS open,
+          count(*) FILTER (WHERE status='open' AND severity='critical') AS critical,
+          count(*) FILTER (WHERE status='open' AND severity='high') AS high,
+          count(*) FILTER (WHERE status='open' AND severity='medium') AS medium,
+          count(DISTINCT asset_id) FILTER (WHERE status='open') AS affected_assets
+          FROM findings""").fetchone())
+
+
+def update_finding_status(finding_id, status):
+    with connection() as conn:
+        return _serialize(conn.execute("UPDATE findings SET status=%s,updated_at=now() WHERE finding_id=%s RETURNING *", (status,finding_id)).fetchone())

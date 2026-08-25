@@ -22,6 +22,8 @@ function useSessionMutation(mutationFn) {
       queryClient.invalidateQueries({ queryKey: ['scan-history'] })
       queryClient.invalidateQueries({ queryKey: ['services'] })
       queryClient.invalidateQueries({ queryKey: ['services-summary'] })
+      queryClient.invalidateQueries({ queryKey: ['findings'] })
+      queryClient.invalidateQueries({ queryKey: ['findings-summary'] })
     },
   })
 }

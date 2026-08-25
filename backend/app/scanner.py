@@ -28,6 +28,19 @@ class ServiceObservation:
     confidence: str = "low"
     confidence_score: float | None = None
     enrichment_status: str = "not_enriched"
+    service_id: str | None = None
+    is_new: bool = False
+
+
+@dataclass
+class ExposureCheckObservation:
+    check_id: str
+    port: int | None
+    protocol: str | None
+    status: str
+    output: str | None = None
+    structured_output: dict = field(default_factory=dict)
+    check_run_id: str | None = None
 
 
 @dataclass
@@ -41,6 +54,9 @@ class HostObservation:
     os_confidence: float | None = None
     discovery_sources: list[str] = field(default_factory=lambda: ["nmap"])
     services: list[ServiceObservation] = field(default_factory=list)
+    exposure_checks: list[ExposureCheckObservation] = field(default_factory=list)
+    asset_id: str | None = None
+    is_new_asset: bool = False
 
 
 class ScanStopped(Exception):
@@ -260,3 +276,91 @@ def fingerprint_hosts(hosts: list[HostObservation], stop_event: threading.Event)
 def scan_two_pass(subnet: str, stop_event: threading.Event) -> list[HostObservation]:
     hosts = discover_hosts(subnet, stop_event)
     return fingerprint_hosts(hosts, stop_event)
+
+
+APPROVED_EXPOSURE_SCRIPTS = frozenset({"smb-protocols", "ftp-anon", "ssl-cert", "rdp-enum-encryption"})
+TLS_PORTS = {443, 465, 636, 853, 989, 990, 992, 993, 995, 8443, 9443}
+
+
+def _approved_checks_for(host: HostObservation) -> dict[str, set[int]]:
+    selected: dict[str, set[int]] = {}
+    for service in host.services:
+        name = (service.name or "").lower()
+        if service.port in {139, 445}:
+            selected.setdefault("smb-protocols", set()).add(service.port)
+        if service.port == 21 or name == "ftp":
+            selected.setdefault("ftp-anon", set()).add(service.port)
+        if service.port in TLS_PORTS or name in {"https", "ssl", "ssl/http", "https-alt"}:
+            selected.setdefault("ssl-cert", set()).add(service.port)
+        if service.port == 3389 or name in {"ms-wbt-server", "rdp"}:
+            selected.setdefault("rdp-enum-encryption", set()).add(service.port)
+    return selected
+
+
+def _xml_element_data(element: ET.Element):
+    children = list(element)
+    if not children:
+        return element.text or ""
+    result = {}
+    for child in children:
+        key = child.get("key") or child.tag
+        value = _xml_element_data(child)
+        if key in result:
+            result[key] = result[key] if isinstance(result[key], list) else [result[key]]
+            result[key].append(value)
+        else:
+            result[key] = value
+    return result
+
+
+def parse_exposure_check_xml(path: Path, host: HostObservation) -> None:
+    root = ET.parse(path).getroot()
+    returned = set()
+    for port_node in root.findall("host/ports/port"):
+        port = int(port_node.get("portid"))
+        protocol = port_node.get("protocol", "tcp")
+        for script in port_node.findall("script"):
+            check_id = script.get("id")
+            if check_id not in APPROVED_EXPOSURE_SCRIPTS:
+                continue
+            returned.add((check_id, port))
+            host.exposure_checks.append(ExposureCheckObservation(
+                check_id=check_id, port=port, protocol=protocol, status="completed",
+                output=script.get("output"), structured_output=_xml_element_data(script),
+            ))
+    expected = _approved_checks_for(host)
+    for check_id, ports in expected.items():
+        for port in ports:
+            if (check_id, port) not in returned:
+                host.exposure_checks.append(ExposureCheckObservation(
+                    check_id=check_id, port=port, protocol="tcp", status="no_result",
+                    output="Approved check completed without script output.",
+                ))
+
+
+def run_exposure_checks(hosts: list[HostObservation], stop_event: threading.Event) -> list[HostObservation]:
+    if not settings.exposure_checks_enabled:
+        return hosts
+    eligible = [(host, _approved_checks_for(host)) for host in hosts]
+    eligible = [(host, checks) for host, checks in eligible if checks]
+    if not eligible:
+        return hosts
+    with TemporaryDirectory(prefix="secureops-exposure-") as directory:
+        def check_host(item):
+            host, checks = item
+            scripts = sorted(checks)
+            if not set(scripts).issubset(APPROVED_EXPOSURE_SCRIPTS):
+                raise RuntimeError("An unapproved Nmap exposure script was requested")
+            ports = sorted({port for selected in checks.values() for port in selected})
+            output = Path(directory) / f"exposure-{host.ip_address.replace('.', '-')}.xml"
+            arguments = [
+                "-Pn", "-n", "-sT", "--script", ",".join(scripts), "-p", ",".join(map(str, ports)),
+                "--script-timeout", "15s", "--host-timeout", f"{settings.exposure_check_timeout_seconds}s",
+                "--max-retries", "0", "-T4", host.ip_address,
+            ]
+            _run_nmap(arguments, output, stop_event)
+            parse_exposure_check_xml(output, host)
+
+        with ThreadPoolExecutor(max_workers=min(settings.parallel_exposure_hosts, len(eligible))) as pool:
+            list(pool.map(check_host, eligible))
+    return hosts

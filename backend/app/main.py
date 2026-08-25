@@ -11,7 +11,7 @@ from .database import connection, initialize_schema
 from .scan_service import ScanCoordinator
 from .scanner import validate_authorized_subnet
 from .network import connected_ipv4_networks
-from .schemas import AssetUpdate, ScanStart
+from .schemas import AssetUpdate, FindingUpdate, ScanStart
 
 
 class EventHub:
@@ -79,6 +79,30 @@ def services_summary():
     return {"data": repository.service_summary()}
 
 
+@app.get("/api/v1/findings")
+def findings(
+    status: str | None = None,
+    severity: str | None = None,
+    confidence: str | None = None,
+    check_id: str | None = None,
+    q: str | None = Query(default=None, max_length=120),
+):
+    return {"data": repository.list_findings(status, severity, confidence, check_id, q)}
+
+
+@app.get("/api/v1/findings/summary")
+def findings_summary():
+    return {"data": repository.findings_summary()}
+
+
+@app.patch("/api/v1/findings/{finding_id}")
+def patch_finding(finding_id: str, payload: FindingUpdate):
+    result = repository.update_finding_status(finding_id, payload.status)
+    if not result: raise HTTPException(404, "Finding not found")
+    hub.publish("FINDING_UPDATED", result)
+    return {"data": result}
+
+
 @app.patch("/api/v1/devices/{asset_id}")
 def patch_device(asset_id: str, payload: AssetUpdate):
     result = repository.update_asset(asset_id, payload.model_dump())
@@ -97,6 +121,11 @@ def history(): return {"data": repository.scan_history()}
 
 @app.get("/api/v1/scan/sessions")
 def sessions(): return {"data": repository.list_sessions()}
+
+
+@app.get("/api/v1/scan/sessions/{session_id}/checks")
+def session_checks(session_id: str):
+    return {"data": repository.list_exposure_checks(session_id)}
 
 
 @app.get("/api/v1/scan/network")

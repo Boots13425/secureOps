@@ -1,7 +1,7 @@
 import threading
 
 from . import repository
-from .scanner import ScanStopped, discover_hosts, fingerprint_hosts
+from .scanner import ScanStopped, discover_hosts, fingerprint_hosts, run_exposure_checks
 
 
 class ScanCoordinator:
@@ -37,6 +37,16 @@ class ScanCoordinator:
             fingerprint_hosts(hosts, stop)
             if stop.is_set(): return
             repository.store_scan_results(session_id, session["subnet"], hosts, record_activity=False)
+            self.publish("SESSION_TICK", {"id": session_id, "phase": "fingerprinted", "devices_found": len(hosts)})
+            try:
+                run_exposure_checks(hosts, stop)
+                if stop.is_set(): return
+                created = repository.store_exposure_results(session_id, hosts)
+                self.publish("SESSION_TICK", {"id": session_id, "phase": "exposure_checked", "findings_created": created})
+            except ScanStopped:
+                raise
+            except Exception as exc:
+                repository.add_activity(session_id, "EXPOSURE_CHECKS_FAILED", "Exposure checks could not complete", str(exc)[:1000])
             result = repository.finish_session(session_id, "COMPLETED", len(hosts))
             self.publish("SESSION_COMPLETED", result)
         except ScanStopped:

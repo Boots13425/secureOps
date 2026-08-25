@@ -91,6 +91,52 @@ CREATE INDEX IF NOT EXISTS idx_services_asset ON services (asset_id);
 CREATE INDEX IF NOT EXISTS idx_services_exposure ON services (port, protocol, state);
 CREATE INDEX IF NOT EXISTS idx_services_enrichment ON services (enrichment_status, confidence);
 
+CREATE TABLE IF NOT EXISTS exposure_check_runs (
+  check_run_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scan_id uuid NOT NULL REFERENCES scan_sessions(id) ON DELETE CASCADE,
+  asset_id uuid NOT NULL REFERENCES assets(asset_id) ON DELETE CASCADE,
+  check_id varchar(40) NOT NULL,
+  port integer,
+  protocol varchar(8),
+  status varchar(16) NOT NULL CHECK (status IN ('completed','no_result','failed')),
+  output text,
+  structured_output jsonb,
+  executed_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_check_runs_asset_time ON exposure_check_runs (asset_id, executed_at DESC);
+
+CREATE TABLE IF NOT EXISTS findings (
+  finding_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  finding_key text NOT NULL UNIQUE,
+  asset_id uuid NOT NULL REFERENCES assets(asset_id) ON DELETE CASCADE,
+  service_id uuid REFERENCES services(service_id) ON DELETE SET NULL,
+  check_id varchar(40) NOT NULL,
+  title text NOT NULL,
+  evidence text NOT NULL,
+  severity varchar(16) NOT NULL CHECK (severity IN ('critical','high','medium','low','informational')),
+  confidence varchar(8) NOT NULL CHECK (confidence IN ('high','medium','low')),
+  why_it_matters text NOT NULL,
+  recommendation text NOT NULL,
+  source varchar(40) NOT NULL DEFAULT 'network_exposure_check',
+  status varchar(16) NOT NULL DEFAULT 'open' CHECK (status IN ('open','accepted','resolved')),
+  first_seen timestamptz NOT NULL,
+  last_seen timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_findings_posture ON findings (status, severity, last_seen DESC);
+CREATE INDEX IF NOT EXISTS idx_findings_asset ON findings (asset_id, status);
+
+CREATE TABLE IF NOT EXISTS finding_observations (
+  finding_observation_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  finding_id uuid NOT NULL REFERENCES findings(finding_id) ON DELETE CASCADE,
+  scan_id uuid NOT NULL REFERENCES scan_sessions(id) ON DELETE CASCADE,
+  check_run_id uuid REFERENCES exposure_check_runs(check_run_id) ON DELETE SET NULL,
+  evidence text NOT NULL,
+  observed_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (finding_id, scan_id)
+);
+
 -- Preserve and surface fingerprints collected before the persistent Layer 2
 -- inventory was introduced. Their confidence remains low because older rows
 -- did not retain Nmap's confidence metadata.
