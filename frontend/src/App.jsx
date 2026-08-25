@@ -2,6 +2,7 @@ import { Routes, Route } from 'react-router-dom'
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
 import Devices from './pages/Devices'
+import AssetDetail from './pages/AssetDetail'
 import Services from './pages/Services'
 import Findings from './pages/Findings'
 import Vulnerabilities from './pages/Vulnerabilities'
@@ -23,6 +24,7 @@ export default function App() {
             <Routes>
               <Route path="/" element={<Dashboard />} />
               <Route path="/devices" element={<Devices />} />
+              <Route path="/devices/:assetId" element={<AssetDetail />} />
               <Route path="/services" element={<Services />} />
               <Route path="/findings" element={<Findings />} />
               <Route path="/vulnerabilities" element={<Vulnerabilities />} />

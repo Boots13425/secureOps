@@ -26,6 +26,18 @@ export async function getDevices(filters = {}) {
   return data.data
 }
 
+export async function getDevice(assetId) {
+  const devices = await getDevices()
+  const device = devices.find((item) => item.id === assetId)
+  if (!device) throw new Error('Device not found')
+  return device
+}
+
+export async function getDeviceServices(assetId) {
+  const { data } = await http.get(`/devices/${assetId}/services`)
+  return data.data
+}
+
 export async function getScanActivity(limit = 8) {
   if (USE_MOCKS) {
     await delay(200)
@@ -79,6 +91,13 @@ export async function getFindingsSummary() {
 export async function updateFindingStatus({ findingId, status }) {
   const { data } = await http.patch(`/findings/${findingId}`, { status })
   return data.data
+}
+
+// No dedicated backend endpoint for a single asset's findings — filter the
+// same list the Findings page uses rather than adding a redundant route.
+export async function getDeviceFindings(assetId) {
+  const findings = await getFindings()
+  return findings.filter((finding) => finding.asset_id === assetId)
 }
 
 export async function getVulnerabilities(filters = {}) {

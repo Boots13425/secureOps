@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { HardDrive, Filter } from 'lucide-react'
 import { useDevices } from '../hooks/useDevices'
 import StatusPill from '../components/StatusPill'
@@ -58,10 +59,12 @@ export default function Devices() {
             </thead>
             <tbody>
               {sorted.map((d) => (
-                <tr key={d.id} className="border-b border-[var(--border)] last:border-0">
+                <tr key={d.id} className="border-b border-[var(--border)] last:border-0 hover:bg-[var(--bg-hover)] cursor-pointer">
                   <td className="py-2.5">
-                    <div className="text-[var(--text-primary)]">{d.hostname || 'Unknown'}</div>
-                    <div className="text-[11px] text-[var(--text-muted)] capitalize">{d.device_type}</div>
+                    <Link to={`/devices/${d.id}`} className="block">
+                      <div className="text-[var(--text-primary)] hover:text-[var(--accent)]">{d.hostname || 'Unknown'}</div>
+                      <div className="text-[11px] text-[var(--text-muted)] capitalize">{d.device_type}</div>
+                    </Link>
                   </td>
                   <td className="py-2.5 mono">{d.ip}</td>
                   <td className="py-2.5 mono text-[var(--text-muted)]">{d.mac_address || '—'}</td>
