@@ -137,6 +137,70 @@ CREATE TABLE IF NOT EXISTS finding_observations (
   UNIQUE (finding_id, scan_id)
 );
 
+CREATE TABLE IF NOT EXISTS nvd_enrichment_runs (
+  enrichment_run_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scan_id uuid REFERENCES scan_sessions(id) ON DELETE SET NULL,
+  trigger_source varchar(16) NOT NULL CHECK (trigger_source IN ('scan','manual','startup')),
+  status varchar(16) NOT NULL CHECK (status IN ('queued','running','completed','partial','failed')),
+  cpes_queued integer NOT NULL DEFAULT 0,
+  cpes_queried integer NOT NULL DEFAULT 0,
+  cache_hits integer NOT NULL DEFAULT 0,
+  cves_matched integer NOT NULL DEFAULT 0,
+  error_message text,
+  queued_at timestamptz NOT NULL DEFAULT now(),
+  started_at timestamptz,
+  finished_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_enrichment_runs_time ON nvd_enrichment_runs (queued_at DESC);
+
+CREATE TABLE IF NOT EXISTS nvd_cpe_cache (
+  cpe_name text PRIMARY KEY,
+  query_cpe text NOT NULL,
+  query_type varchar(24) NOT NULL,
+  result_count integer NOT NULL DEFAULT 0,
+  response_data jsonb,
+  last_refreshed_at timestamptz NOT NULL,
+  last_error text,
+  next_retry_at timestamptz
+);
+
+CREATE TABLE IF NOT EXISTS vulnerabilities (
+  cve_id varchar(24) PRIMARY KEY,
+  source_identifier text,
+  published_at timestamptz,
+  modified_at timestamptz,
+  vuln_status text,
+  description text NOT NULL,
+  cvss_version varchar(8),
+  cvss_base_score numeric(4,1),
+  cvss_base_severity varchar(16),
+  cvss_vector text,
+  applicability_data jsonb,
+  raw_nvd_data jsonb NOT NULL,
+  nvd_last_refreshed_at timestamptz NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_vulnerabilities_cvss ON vulnerabilities (cvss_base_score DESC NULLS LAST);
+
+CREATE TABLE IF NOT EXISTS service_vulnerabilities (
+  service_vulnerability_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  service_id uuid NOT NULL REFERENCES services(service_id) ON DELETE CASCADE,
+  cve_id varchar(24) NOT NULL REFERENCES vulnerabilities(cve_id) ON DELETE CASCADE,
+  matched_cpe text NOT NULL,
+  match_confidence varchar(12) NOT NULL CHECK (match_confidence IN ('high','medium','low','confirmed')),
+  match_wording text NOT NULL,
+  match_reason text NOT NULL,
+  applicability_status varchar(16) NOT NULL DEFAULT 'candidate' CHECK (applicability_status IN ('candidate','likely','confirmed','rejected')),
+  status varchar(16) NOT NULL DEFAULT 'active' CHECK (status IN ('active','dismissed','resolved')),
+  first_seen timestamptz NOT NULL,
+  last_seen timestamptz NOT NULL,
+  last_checked_at timestamptz NOT NULL,
+  UNIQUE (service_id, cve_id)
+);
+CREATE INDEX IF NOT EXISTS idx_service_vulns_posture ON service_vulnerabilities (status, match_confidence, last_seen DESC);
+CREATE INDEX IF NOT EXISTS idx_service_vulns_cve ON service_vulnerabilities (cve_id);
+
 -- Preserve and surface fingerprints collected before the persistent Layer 2
 -- inventory was introduced. Their confidence remains low because older rows
 -- did not retain Nmap's confidence metadata.

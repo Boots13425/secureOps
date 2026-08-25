@@ -40,6 +40,17 @@ administrative ports are evaluated from stored service/history evidence.
 it is intrusive/noisy. Raw check output is stored for evidence and findings
 never assert a CVE that was not established by a later intelligence layer.
 
+## Layer 4 NVD enrichment
+
+CPE-bearing services are enriched asynchronously through the NVD CVE API 2.0.
+Responses are cached locally for `NVD_CACHE_HOURS`, so dashboard requests never
+call NVD. Configure `NVD_API_KEY` for higher authorized throughput. Exact
+versioned CPEs are presented as likely/high-confidence candidates; partial CPEs
+are potential matches requiring version validation. Generic unversioned platform
+CPEs are not queried automatically because they would produce misleadingly broad
+results. CVSS is selected consistently in the order v4.0, v3.1, v3.0, then v2,
+while the selected version and vector are retained alongside the score.
+
 ## API
 
 - `GET /health`

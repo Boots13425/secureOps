@@ -43,6 +43,9 @@ export function useScanSocket() {
           queryClient.invalidateQueries({ queryKey: ['services-summary'] })
           queryClient.invalidateQueries({ queryKey: ['findings'] })
           queryClient.invalidateQueries({ queryKey: ['findings-summary'] })
+          queryClient.invalidateQueries({ queryKey: ['vulnerabilities'] })
+          queryClient.invalidateQueries({ queryKey: ['vulnerabilities-summary'] })
+          queryClient.invalidateQueries({ queryKey: ['enrichment-runs'] })
         }
 
         if (data.event === 'SESSION_TICK') {
@@ -53,11 +56,19 @@ export function useScanSocket() {
           queryClient.invalidateQueries({ queryKey: ['services-summary'] })
           queryClient.invalidateQueries({ queryKey: ['findings'] })
           queryClient.invalidateQueries({ queryKey: ['findings-summary'] })
+          queryClient.invalidateQueries({ queryKey: ['vulnerabilities'] })
+          queryClient.invalidateQueries({ queryKey: ['vulnerabilities-summary'] })
+          queryClient.invalidateQueries({ queryKey: ['enrichment-runs'] })
         }
 
         if (data.event === 'FINDING_UPDATED') {
           queryClient.invalidateQueries({ queryKey: ['findings'] })
           queryClient.invalidateQueries({ queryKey: ['findings-summary'] })
+        }
+
+        if (data.event === 'VULNERABILITY_UPDATED') {
+          queryClient.invalidateQueries({ queryKey: ['vulnerabilities'] })
+          queryClient.invalidateQueries({ queryKey: ['vulnerabilities-summary'] })
         }
       }
 

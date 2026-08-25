@@ -30,6 +30,10 @@ class Settings:
     exposure_checks_enabled: bool = os.getenv("NMAP_EXPOSURE_CHECKS_ENABLED", "true").lower() == "true"
     exposure_check_timeout_seconds: int = int(os.getenv("NMAP_EXPOSURE_CHECK_TIMEOUT_SECONDS", "25"))
     parallel_exposure_hosts: int = int(os.getenv("NMAP_EXPOSURE_PARALLEL_HOSTS", "4"))
+    nvd_api_key: str | None = os.getenv("NVD_API_KEY") or None
+    nvd_cache_hours: int = int(os.getenv("NVD_CACHE_HOURS", "24"))
+    nvd_max_results_per_cpe: int = int(os.getenv("NVD_MAX_RESULTS_PER_CPE", "200"))
+    nvd_request_timeout_seconds: int = int(os.getenv("NVD_REQUEST_TIMEOUT_SECONDS", "30"))
     cors_origins: tuple[str, ...] = tuple(
         value.strip() for value in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if value.strip()
     )

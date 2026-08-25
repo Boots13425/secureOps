@@ -2,6 +2,7 @@ import threading
 
 from . import repository
 from .scanner import ScanStopped, discover_hosts, fingerprint_hosts, run_exposure_checks
+from .nvd import coordinator as nvd_coordinator
 
 
 class ScanCoordinator:
@@ -48,6 +49,9 @@ class ScanCoordinator:
             except Exception as exc:
                 repository.add_activity(session_id, "EXPOSURE_CHECKS_FAILED", "Exposure checks could not complete", str(exc)[:1000])
             result = repository.finish_session(session_id, "COMPLETED", len(hosts))
+            service_ids = [service.service_id for host in hosts for service in host.services if service.service_id and service.cpe]
+            enrichment_job = nvd_coordinator.schedule(session_id, "scan", service_ids)
+            repository.add_activity(session_id, "NVD_ENRICHMENT_QUEUED", "NVD enrichment queued", f"Job {enrichment_job} · {len(service_ids)} CPE-bearing service(s)")
             self.publish("SESSION_COMPLETED", result)
         except ScanStopped:
             if repository.get_session(session_id)["status"] == "RUNNING":

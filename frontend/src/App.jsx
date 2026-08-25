@@ -4,6 +4,7 @@ import Dashboard from './pages/Dashboard'
 import Devices from './pages/Devices'
 import Services from './pages/Services'
 import Findings from './pages/Findings'
+import Vulnerabilities from './pages/Vulnerabilities'
 import ScanActivity from './pages/ScanActivity'
 import ScanSessions from './pages/ScanSessions'
 import Placeholder from './pages/Placeholder'
@@ -24,6 +25,7 @@ export default function App() {
               <Route path="/devices" element={<Devices />} />
               <Route path="/services" element={<Services />} />
               <Route path="/findings" element={<Findings />} />
+              <Route path="/vulnerabilities" element={<Vulnerabilities />} />
               <Route path="/discovery" element={<ScanActivity />} />
               <Route path="/sessions" element={<ScanSessions />} />
               <Route path="/settings" element={<Placeholder title="Settings" />} />
