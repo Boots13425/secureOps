@@ -22,6 +22,7 @@ export async function getDevices(filters = {}) {
   const params = {}
   if (filters.status) params.status = filters.status
   if (filters.deviceType) params.type = filters.deviceType
+  if (filters.scanId) params.scan_id = filters.scanId
   const { data } = await http.get('/devices', { params })
   return data.data
 }
@@ -38,12 +39,14 @@ export async function getDeviceServices(assetId) {
   return data.data
 }
 
-export async function getScanActivity(limit = 8) {
+export async function getScanActivity(limit = 8, scanId) {
   if (USE_MOCKS) {
     await delay(200)
     return mockScanActivity
   }
-  const { data } = await http.get('/scan/activity', { params: { limit } })
+  const params = { limit }
+  if (scanId) params.scan_id = scanId
+  const { data } = await http.get('/scan/activity', { params })
   return data.data
 }
 

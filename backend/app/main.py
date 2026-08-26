@@ -51,8 +51,8 @@ def health():
 
 
 @app.get("/api/v1/devices")
-def devices(status: str | None = None, device_type: str | None = Query(default=None, alias="type")):
-    return {"data": repository.list_assets(status, device_type)}
+def devices(status: str | None = None, device_type: str | None = Query(default=None, alias="type"), scan_id: str | None = None):
+    return {"data": repository.list_assets(status, device_type, scan_id)}
 
 
 @app.get("/api/v1/devices/{asset_id}/services")
@@ -145,7 +145,7 @@ def patch_device(asset_id: str, payload: AssetUpdate):
 
 
 @app.get("/api/v1/scan/activity")
-def activity(limit: int = Query(8, ge=1, le=200)): return {"data": repository.list_activity(limit)}
+def activity(limit: int = Query(8, ge=1, le=200), scan_id: str | None = None): return {"data": repository.list_activity(limit, scan_id)}
 
 
 @app.get("/api/v1/scan/history")

@@ -14,12 +14,14 @@ import {
   ServerCog,
   ShieldAlert,
   DatabaseZap,
+  History,
 } from 'lucide-react'
 import NextScanWidget from './NextScanWidget'
 
 const navItems = [
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/devices', label: 'Devices', icon: HardDrive },
+  { to: '/history', label: 'History', icon: History },
   { to: '/services', label: 'Services & CPE', icon: ServerCog },
   { to: '/findings', label: 'Exposure Findings', icon: ShieldAlert },
   { to: '/vulnerabilities', label: 'CVE Intelligence', icon: DatabaseZap },

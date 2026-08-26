@@ -14,10 +14,11 @@ def _serialize(row):
     return {key: (str(value) if isinstance(value, string_types) else value) for key, value in row.items()}
 
 
-def list_assets(status=None, device_type=None):
+def list_assets(status=None, device_type=None, scan_id=None):
     clauses, params = [], []
     if status: clauses.append("a.status = %s"); params.append(status)
     if device_type: clauses.append("a.device_type = %s"); params.append(device_type)
+    if scan_id: clauses.append("EXISTS (SELECT 1 FROM asset_observations so WHERE so.asset_id=a.asset_id AND so.scan_id=%s)"); params.append(scan_id)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     sql = f"""
       SELECT a.asset_id AS id, a.asset_id, host(a.ip_address) AS ip,
@@ -125,9 +126,11 @@ def store_scan_results(session_id, subnet, hosts: list[HostObservation], record_
             conn.execute("UPDATE assets SET status='missing', updated_at=now() WHERE ip_address <<= %s::cidr", (subnet,))
 
 
-def list_activity(limit):
+def list_activity(limit, scan_id=None):
+    clause = "WHERE scan_id=%s " if scan_id else ""
+    params = (scan_id, limit) if scan_id else (limit,)
     with connection() as conn:
-        rows = conn.execute("SELECT id,message,detail,created_at AS timestamp,event_type FROM scan_activity ORDER BY created_at DESC LIMIT %s", (limit,)).fetchall()
+        rows = conn.execute(f"SELECT id,message,detail,created_at AS timestamp,event_type FROM scan_activity {clause}ORDER BY created_at DESC LIMIT %s", params).fetchall()
         return [_serialize(row) for row in rows]
 
 
