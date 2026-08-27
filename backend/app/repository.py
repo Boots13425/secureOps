@@ -255,10 +255,11 @@ def list_vulnerabilities(status=None, severity=None, confidence=None, query=None
     sql = f"""SELECT sv.service_vulnerability_id,sv.service_id,sv.cve_id,sv.matched_cpe,sv.match_confidence,sv.match_wording,
       sv.match_reason,sv.applicability_status,sv.status,sv.first_seen,sv.last_seen,sv.last_checked_at,
       v.description,v.published_at,v.modified_at,v.vuln_status,v.cvss_version,v.cvss_base_score,v.cvss_base_severity,v.cvss_vector,v.nvd_last_refreshed_at,
+      e.epss_score,e.epss_percentile,e.epss_date,sv.organization_risk_score,sv.organization_risk_band,sv.risk_calculated_at,
       s.asset_id,s.port,s.protocol,s.service_name,s.product,s.version,s.cpe,host(a.ip_address) AS ip_address,a.hostname,a.device_type
       FROM service_vulnerabilities sv JOIN vulnerabilities v ON v.cve_id=sv.cve_id JOIN services s ON s.service_id=sv.service_id
-      JOIN assets a ON a.asset_id=s.asset_id {where}
-      ORDER BY v.cvss_base_score DESC NULLS LAST,sv.match_confidence,sv.last_seen DESC"""
+      JOIN assets a ON a.asset_id=s.asset_id LEFT JOIN epss_current_scores e ON e.cve_id=v.cve_id {where}
+      ORDER BY sv.organization_risk_score DESC NULLS LAST,v.cvss_base_score DESC NULLS LAST,sv.match_confidence,sv.last_seen DESC"""
     with connection() as conn:
         return [_serialize(row) for row in conn.execute(sql, params).fetchall()]
 
@@ -282,3 +283,46 @@ def update_vulnerability_match_status(match_id, status):
 def list_enrichment_runs(limit=20):
     with connection() as conn:
         return [_serialize(row) for row in conn.execute("SELECT * FROM nvd_enrichment_runs ORDER BY queued_at DESC LIMIT %s", (limit,)).fetchall()]
+
+
+def list_epss_intelligence(status="active", query=None):
+    clauses, params = [], []
+    if status: clauses.append("sv.status=%s"); params.append(status)
+    if query:
+        clauses.append("(v.cve_id ILIKE %s OR v.description ILIKE %s OR a.hostname ILIKE %s OR host(a.ip_address) ILIKE %s OR s.product ILIKE %s)")
+        params.extend([f"%{query}%"] * 5)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    sql = f"""SELECT sv.service_vulnerability_id,sv.status,sv.match_confidence,sv.match_wording,
+      sv.organization_risk_score,sv.organization_risk_band,sv.risk_calculated_at,
+      v.cve_id,v.description,v.cvss_base_score,v.cvss_base_severity,
+      e.epss_score,e.epss_percentile,e.epss_date,
+      s.asset_id,s.port,s.protocol,s.service_name,s.product,s.version,
+      host(a.ip_address) AS ip_address,a.hostname,a.device_type,a.status AS asset_status
+      FROM service_vulnerabilities sv
+      JOIN vulnerabilities v ON v.cve_id=sv.cve_id
+      JOIN services s ON s.service_id=sv.service_id
+      JOIN assets a ON a.asset_id=s.asset_id
+      LEFT JOIN epss_current_scores e ON e.cve_id=v.cve_id
+      {where}
+      ORDER BY sv.organization_risk_score DESC NULLS LAST,e.epss_score DESC NULLS LAST,v.cvss_base_score DESC NULLS LAST"""
+    with connection() as conn:
+        return [_serialize(row) for row in conn.execute(sql, params).fetchall()]
+
+
+def epss_summary():
+    with connection() as conn:
+        return _serialize(conn.execute("""SELECT
+          count(DISTINCT v.cve_id) FILTER (WHERE sv.status='active') AS discovered_cves,
+          count(DISTINCT v.cve_id) FILTER (WHERE sv.status='active' AND e.cve_id IS NOT NULL) AS scored_cves,
+          max(e.epss_score) FILTER (WHERE sv.status='active') AS highest_epss_score,
+          max(e.epss_percentile) FILTER (WHERE sv.status='active') AS highest_percentile,
+          count(*) FILTER (WHERE sv.status='active' AND sv.organization_risk_band IN ('critical','high')) AS high_risk_matches,
+          max(e.epss_date) AS latest_epss_date
+          FROM service_vulnerabilities sv
+          JOIN vulnerabilities v ON v.cve_id=sv.cve_id
+          LEFT JOIN epss_current_scores e ON e.cve_id=v.cve_id""").fetchone())
+
+
+def list_epss_runs(limit=20):
+    with connection() as conn:
+        return [_serialize(row) for row in conn.execute("SELECT * FROM epss_download_runs ORDER BY queued_at DESC LIMIT %s", (limit,)).fetchall()]

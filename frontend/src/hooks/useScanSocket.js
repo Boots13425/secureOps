@@ -70,6 +70,13 @@ export function useScanSocket() {
           queryClient.invalidateQueries({ queryKey: ['vulnerabilities'] })
           queryClient.invalidateQueries({ queryKey: ['vulnerabilities-summary'] })
         }
+
+        if (['EPSS_UPDATED', 'EPSS_FAILED'].includes(data.event)) {
+          queryClient.invalidateQueries({ queryKey: ['epss-intelligence'] })
+          queryClient.invalidateQueries({ queryKey: ['epss-summary'] })
+          queryClient.invalidateQueries({ queryKey: ['epss-runs'] })
+          queryClient.invalidateQueries({ queryKey: ['vulnerabilities'] })
+        }
       }
 
       socket.onclose = () => {
