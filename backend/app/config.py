@@ -34,6 +34,12 @@ class Settings:
     nvd_cache_hours: int = int(os.getenv("NVD_CACHE_HOURS", "24"))
     nvd_max_results_per_cpe: int = int(os.getenv("NVD_MAX_RESULTS_PER_CPE", "200"))
     nvd_request_timeout_seconds: int = int(os.getenv("NVD_REQUEST_TIMEOUT_SECONDS", "30"))
+    epss_csv_url: str = os.getenv("EPSS_CSV_URL", "https://epss.empiricalsecurity.com/epss_scores-current.csv.gz")
+    epss_schedule_time: str = os.getenv("EPSS_SCHEDULE_TIME", "14:45")
+    epss_timezone: str = os.getenv("EPSS_TIMEZONE", "Africa/Douala")
+    epss_retry_minutes: int = int(os.getenv("EPSS_RETRY_MINUTES", "10"))
+    epss_request_timeout_seconds: int = int(os.getenv("EPSS_REQUEST_TIMEOUT_SECONDS", "60"))
+    epss_max_download_mb: int = int(os.getenv("EPSS_MAX_DOWNLOAD_MB", "50"))
     cors_origins: tuple[str, ...] = tuple(
         value.strip() for value in os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",") if value.strip()
     )

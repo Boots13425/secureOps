@@ -201,6 +201,49 @@ CREATE TABLE IF NOT EXISTS service_vulnerabilities (
 CREATE INDEX IF NOT EXISTS idx_service_vulns_posture ON service_vulnerabilities (status, match_confidence, last_seen DESC);
 CREATE INDEX IF NOT EXISTS idx_service_vulns_cve ON service_vulnerabilities (cve_id);
 
+-- Layer 5 keeps EPSS probability data separate from NVD CVE/CVSS records.
+-- A snapshot preserves what FIRST published each day; the current table makes
+-- dashboard joins inexpensive without losing history.
+CREATE TABLE IF NOT EXISTS epss_download_runs (
+  epss_run_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  target_date date NOT NULL,
+  trigger_source varchar(16) NOT NULL CHECK (trigger_source IN ('scheduled','retry','manual','startup')),
+  status varchar(16) NOT NULL CHECK (status IN ('queued','running','completed','failed')),
+  source_url text NOT NULL,
+  records_received integer NOT NULL DEFAULT 0,
+  error_message text,
+  queued_at timestamptz NOT NULL DEFAULT now(),
+  started_at timestamptz,
+  finished_at timestamptz,
+  next_retry_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_epss_runs_date ON epss_download_runs (target_date DESC, queued_at DESC);
+
+CREATE TABLE IF NOT EXISTS epss_daily_snapshots (
+  epss_date date NOT NULL,
+  cve_id varchar(24) NOT NULL,
+  epss_score numeric(8,7) NOT NULL CHECK (epss_score >= 0 AND epss_score <= 1),
+  epss_percentile numeric(8,7) NOT NULL CHECK (epss_percentile >= 0 AND epss_percentile <= 1),
+  source_run_id uuid NOT NULL REFERENCES epss_download_runs(epss_run_id) ON DELETE RESTRICT,
+  imported_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (epss_date, cve_id)
+);
+CREATE INDEX IF NOT EXISTS idx_epss_snapshot_cve ON epss_daily_snapshots (cve_id, epss_date DESC);
+
+CREATE TABLE IF NOT EXISTS epss_current_scores (
+  cve_id varchar(24) PRIMARY KEY,
+  epss_score numeric(8,7) NOT NULL CHECK (epss_score >= 0 AND epss_score <= 1),
+  epss_percentile numeric(8,7) NOT NULL CHECK (epss_percentile >= 0 AND epss_percentile <= 1),
+  epss_date date NOT NULL,
+  source_run_id uuid NOT NULL REFERENCES epss_download_runs(epss_run_id) ON DELETE RESTRICT,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_epss_current_score ON epss_current_scores (epss_score DESC);
+
+ALTER TABLE service_vulnerabilities ADD COLUMN IF NOT EXISTS organization_risk_score numeric(5,2);
+ALTER TABLE service_vulnerabilities ADD COLUMN IF NOT EXISTS organization_risk_band varchar(12);
+ALTER TABLE service_vulnerabilities ADD COLUMN IF NOT EXISTS risk_calculated_at timestamptz;
+
 -- Preserve and surface fingerprints collected before the persistent Layer 2
 -- inventory was introduced. Their confidence remains low because older rows
 -- did not retain Nmap's confidence metadata.
