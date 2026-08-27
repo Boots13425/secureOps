@@ -66,6 +66,7 @@ export async function getServices(filters = {}) {
   if (filters.enrichmentStatus) params.enrichment_status = filters.enrichmentStatus
   if (filters.port) params.port = filters.port
   if (filters.query) params.q = filters.query
+  if (filters.scanId) params.scan_id = filters.scanId
   const { data } = await http.get('/services', { params })
   return data.data
 }
@@ -82,6 +83,7 @@ export async function getFindings(filters = {}) {
   if (filters.confidence) params.confidence = filters.confidence
   if (filters.checkId) params.check_id = filters.checkId
   if (filters.query) params.q = filters.query
+  if (filters.scanId) params.scan_id = filters.scanId
   const { data } = await http.get('/findings', { params })
   return data.data
 }
@@ -109,6 +111,7 @@ export async function getVulnerabilities(filters = {}) {
   if (filters.severity) params.severity = filters.severity
   if (filters.confidence) params.confidence = filters.confidence
   if (filters.query) params.q = filters.query
+  if (filters.scanId) params.scan_id = filters.scanId
   const { data } = await http.get('/vulnerabilities', { params })
   return data.data
 }

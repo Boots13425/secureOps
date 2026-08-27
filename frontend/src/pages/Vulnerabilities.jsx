@@ -1,20 +1,41 @@
 import { useState } from 'react'
-import { DatabaseZap, ExternalLink, Filter, RefreshCw, Search } from 'lucide-react'
-import { useEnrichmentRuns, useRefreshEnrichment, useUpdateVulnerabilityStatus, useVulnerabilities, useVulnerabilitiesSummary } from '../hooks/useVulnerabilities'
+import { DatabaseZap, ExternalLink, Filter, Flame, RefreshCw, Search } from 'lucide-react'
+import { useEnrichmentRuns, useRefreshEnrichment, useUpdateVulnerabilityStatus, useVulnerabilities } from '../hooks/useVulnerabilities'
+import { useLatestCompletedSession } from '../hooks/useScanSessions'
 import ConfidencePill from '../components/ConfidencePill'
 import EmptyState from '../components/EmptyState'
 import MetricCard from '../components/MetricCard'
 import SeverityPill from '../components/SeverityPill'
 import { timeAgo } from '../utils/time'
 
+// Computed from whatever the list is actually showing, so the cards and the
+// matches below them always agree — instead of a separately-scoped summary call.
+function summarize(matches) {
+  const list = matches || []
+  const active = list.filter((m) => m.status === 'active')
+  return {
+    active_matches: active.length,
+    known_exploited: active.filter((m) => m.kev_flag).length,
+    critical: active.filter((m) => (m.cvss_base_severity || '').toUpperCase() === 'CRITICAL').length,
+    high: active.filter((m) => (m.cvss_base_severity || '').toUpperCase() === 'HIGH').length,
+    high_confidence: active.filter((m) => m.match_confidence === 'high' || m.match_confidence === 'confirmed').length,
+    affected_assets: new Set(active.map((m) => m.asset_id)).size,
+  }
+}
+
 export default function Vulnerabilities() {
+  const [scope, setScope] = useState('current')
   const [status, setStatus] = useState('active')
   const [severity, setSeverity] = useState('')
   const [confidence, setConfidence] = useState('')
   const [query, setQuery] = useState('')
-  const filters = { status, severity, confidence, query: query.trim() }
-  const { data: matches, isLoading } = useVulnerabilities(filters)
-  const { data: summary } = useVulnerabilitiesSummary()
+  const { session: latestScan, isLoading: sessionLoading } = useLatestCompletedSession()
+  const scanId = scope === 'current' ? latestScan?.id : undefined
+  const filters = { status, severity, confidence, query: query.trim(), scanId }
+  const { data: matches, isLoading: matchesLoading } = useVulnerabilities(filters)
+  const summary = summarize(matches)
+  const isLoading = sessionLoading || matchesLoading
+  const blockedByNoScan = scope === 'current' && !sessionLoading && !latestScan
   const { data: runs } = useEnrichmentRuns()
   const refresh = useRefreshEnrichment()
   const updateStatus = useUpdateVulnerabilityStatus()
@@ -24,19 +45,29 @@ export default function Vulnerabilities() {
   return (
     <div className="flex flex-col gap-5">
       <div className="flex items-end justify-between gap-4 flex-wrap">
-        <div><h1 className="text-2xl font-semibold text-[var(--text-primary)]">Vulnerability intelligence</h1><p className="text-sm text-[var(--text-muted)]">Cached NVD CVE and CVSS candidates linked through observed CPE evidence</p></div>
+        <div>
+          <h1 className="text-2xl font-semibold text-[var(--text-primary)]">Vulnerability intelligence</h1>
+          <p className="text-sm text-[var(--text-muted)]">
+            {scope === 'current' ? "NVD candidates for services found in the last scan — a port that's now closed won't linger here." : 'Every candidate ever matched, across every scan (may include ports no longer open).'}
+          </p>
+        </div>
         <div className="flex items-center gap-3">
-          <div className="text-right"><div className="text-xs text-[var(--text-secondary)]">NVD data {latestRun?.status || 'not refreshed'}</div><div className="text-[11px] text-[var(--text-muted)]">{summary?.last_refreshed_at ? `Last refreshed ${timeAgo(summary.last_refreshed_at)}` : 'No vulnerability data stored yet'}</div></div>
+          <div className="flex items-center gap-1 bg-[var(--bg-surface)] border border-[var(--border)] rounded-[var(--radius-sm)] p-1">
+            <button onClick={() => setScope('current')} className={`px-3 py-1.5 text-xs font-medium rounded-[var(--radius-sm)] transition-colors ${scope === 'current' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'}`}>Current scan</button>
+            <button onClick={() => setScope('all')} className={`px-3 py-1.5 text-xs font-medium rounded-[var(--radius-sm)] transition-colors ${scope === 'all' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'}`}>All time</button>
+          </div>
+          <div className="text-right"><div className="text-xs text-[var(--text-secondary)]">NVD data {latestRun?.status || 'not refreshed'}</div><div className="text-[11px] text-[var(--text-muted)]">{latestRun?.finished_at ? `Last refreshed ${timeAgo(latestRun.finished_at)}` : 'No vulnerability data stored yet'}</div></div>
           <button onClick={() => refresh.mutate()} disabled={working} className="flex items-center gap-2 bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-60 text-[var(--on-accent)] text-sm font-semibold px-4 py-2.5 rounded-[var(--radius-sm)] transition-colors"><RefreshCw size={15} className={working ? 'animate-spin' : ''} />{working ? 'Enriching…' : 'Refresh NVD data'}</button>
         </div>
       </div>
 
-      <div className="grid grid-cols-5 gap-4">
-        <MetricCard label="Active matches" value={summary?.active_matches} sub="candidate service links" />
-        <MetricCard label="Critical CVSS" value={summary?.critical} sub="NVD base severity" tone="danger" />
-        <MetricCard label="High CVSS" value={summary?.high} sub="NVD base severity" tone="danger" />
-        <MetricCard label="High confidence" value={summary?.high_confidence} sub="exact CPE/version matches" tone="ok" />
-        <MetricCard label="Affected assets" value={summary?.affected_assets} sub="assets requiring validation" />
+      <div className="grid grid-cols-6 gap-4">
+        <MetricCard label="Active matches" value={summary.active_matches} sub="candidate service links" />
+        <MetricCard label="Known exploited" value={summary.known_exploited} sub="confirmed in CISA KEV" tone="danger" />
+        <MetricCard label="Critical CVSS" value={summary.critical} sub="NVD base severity" tone="danger" />
+        <MetricCard label="High CVSS" value={summary.high} sub="NVD base severity" tone="danger" />
+        <MetricCard label="High confidence" value={summary.high_confidence} sub="exact CPE/version matches" tone="ok" />
+        <MetricCard label="Affected assets" value={summary.affected_assets} sub="assets requiring validation" />
       </div>
 
       <div className="card flex items-end gap-3 flex-wrap">
@@ -47,7 +78,9 @@ export default function Vulnerabilities() {
         <div><label className="block text-xs text-[var(--text-muted)] mb-1.5">Match confidence</label><select value={confidence} onChange={(event) => setConfidence(event.target.value)} className="bg-[var(--bg-surface-2)] border border-[var(--border)] rounded-[var(--radius-sm)] px-3 py-2 text-sm text-[var(--text-primary)]"><option value="">All</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option><option value="confirmed">Confirmed</option></select></div>
       </div>
 
-      {!isLoading && (!matches || matches.length === 0) ? (
+      {blockedByNoScan ? (
+        <div className="card"><EmptyState icon={DatabaseZap} title="No completed scan yet" description="Start a scan from the Discovery page, or switch to All time to see historical data." /></div>
+      ) : !isLoading && (!matches || matches.length === 0) ? (
         <div className="card"><EmptyState icon={DatabaseZap} title="No vulnerability candidates match this view" description="Only sufficiently specific CPE evidence is submitted to NVD. Run a scan or refresh cached NVD data." /></div>
       ) : (
         <div className="flex flex-col gap-3">{(matches || []).map((match) => (
@@ -55,7 +88,14 @@ export default function Vulnerabilities() {
             <div className="flex items-start justify-between gap-4">
               <div className="flex gap-4 min-w-0">
                 <div className="w-16 h-16 shrink-0 rounded-[var(--radius-sm)] bg-[var(--bg-surface-2)] border border-[var(--border)] flex flex-col items-center justify-center"><span className="text-[10px] text-[var(--text-muted)]">CVSS</span><span className="text-xl font-semibold text-[var(--text-primary)]">{match.cvss_base_score ?? '—'}</span><span className="text-[9px] text-[var(--text-muted)]">v{match.cvss_version || 'N/A'}</span></div>
-                <div className="min-w-0"><div className="flex items-center gap-2 flex-wrap mb-1.5"><a href={`https://nvd.nist.gov/vuln/detail/${match.cve_id}`} target="_blank" rel="noreferrer" className="text-base font-semibold text-[var(--accent)] hover:underline inline-flex items-center gap-1">{match.cve_id}<ExternalLink size={13} /></a><SeverityPill severity={(match.cvss_base_severity || 'informational').toLowerCase()} /><ConfidencePill confidence={match.match_confidence === 'confirmed' ? 'high' : match.match_confidence} /></div><div className="text-xs font-medium text-[var(--text-secondary)]">{match.match_wording}</div><div className="text-xs text-[var(--text-muted)] mt-1">{match.hostname || 'Unresolved asset'} · <span className="mono">{match.ip_address}</span> · {match.port}/{match.protocol} · {match.product || match.service_name || 'Unidentified product'} {match.version || ''}</div></div>
+                {match.epss_score != null && (
+                  <div className="w-16 h-16 shrink-0 rounded-[var(--radius-sm)] bg-[var(--bg-surface-2)] border border-[var(--border)] flex flex-col items-center justify-center" title={`EPSS: ${(match.epss_score * 100).toFixed(1)}% chance of exploitation in the next 30 days (${(match.epss_percentile * 100).toFixed(0)}th percentile)`}>
+                    <span className="text-[10px] text-[var(--text-muted)]">EPSS</span>
+                    <span className="text-xl font-semibold text-[var(--text-primary)]">{(match.epss_score * 100).toFixed(0)}%</span>
+                    <span className="text-[9px] text-[var(--text-muted)]">{(match.epss_percentile * 100).toFixed(0)}th pctl</span>
+                  </div>
+                )}
+                <div className="min-w-0"><div className="flex items-center gap-2 flex-wrap mb-1.5"><a href={`https://nvd.nist.gov/vuln/detail/${match.cve_id}`} target="_blank" rel="noreferrer" className="text-base font-semibold text-[var(--accent)] hover:underline inline-flex items-center gap-1">{match.cve_id}<ExternalLink size={13} /></a>{match.kev_flag && <span className="pill pill--danger inline-flex items-center gap-1" title={`Added to CISA KEV ${match.kev_date_added || ''}`}><Flame size={11} />Known Exploited</span>}<SeverityPill severity={(match.cvss_base_severity || 'informational').toLowerCase()} /><ConfidencePill confidence={match.match_confidence === 'confirmed' ? 'high' : match.match_confidence} /></div><div className="text-xs font-medium text-[var(--text-secondary)]">{match.match_wording}</div><div className="text-xs text-[var(--text-muted)] mt-1">{match.hostname || 'Unresolved asset'} · <span className="mono">{match.ip_address}</span> · {match.port}/{match.protocol} · {match.product || match.service_name || 'Unidentified product'} {match.version || ''}</div>{match.kev_flag && match.kev_required_action && <div className="text-xs text-[var(--danger)] mt-1.5 font-medium">CISA required action: {match.kev_required_action}</div>}</div>
               </div>
               <select aria-label={`Update status for ${match.cve_id}`} value={match.status} disabled={updateStatus.isPending} onChange={(event) => updateStatus.mutate({ matchId: match.service_vulnerability_id, status: event.target.value })} className="bg-[var(--bg-surface-2)] border border-[var(--border)] rounded-[var(--radius-sm)] px-3 py-2 text-xs text-[var(--text-primary)]"><option value="active">Active</option><option value="dismissed">Dismiss</option><option value="resolved">Resolved</option></select>
             </div>

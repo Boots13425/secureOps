@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Filter, Search, ShieldAlert } from 'lucide-react'
-import { useFindings, useFindingsSummary, useUpdateFindingStatus } from '../hooks/useFindings'
+import { useFindings, useUpdateFindingStatus } from '../hooks/useFindings'
+import { useLatestCompletedSession } from '../hooks/useScanSessions'
 import ConfidencePill from '../components/ConfidencePill'
 import EmptyState from '../components/EmptyState'
 import MetricCard from '../components/MetricCard'
@@ -9,30 +10,56 @@ import { timeAgo } from '../utils/time'
 
 const CHECKS = ['smb-protocols', 'ftp-anon', 'ssl-cert', 'rdp-enum-encryption', 'service-observation', 'historical-comparison']
 
+// Computed from whatever the list is actually showing, so the cards and the
+// findings below them always agree — instead of a separately-scoped summary call.
+function summarize(findings) {
+  const list = findings || []
+  return {
+    open: list.filter((f) => f.status === 'open').length,
+    critical: list.filter((f) => f.status === 'open' && f.severity === 'critical').length,
+    high: list.filter((f) => f.status === 'open' && f.severity === 'high').length,
+    medium: list.filter((f) => f.status === 'open' && f.severity === 'medium').length,
+    affected_assets: new Set(list.filter((f) => f.status === 'open').map((f) => f.asset_id)).size,
+  }
+}
+
 export default function Findings() {
+  const [scope, setScope] = useState('current')
   const [status, setStatus] = useState('open')
   const [severity, setSeverity] = useState('')
   const [confidence, setConfidence] = useState('')
   const [checkId, setCheckId] = useState('')
   const [query, setQuery] = useState('')
-  const filters = { status, severity, confidence, checkId, query: query.trim() }
-  const { data: findings, isLoading } = useFindings(filters)
-  const { data: summary } = useFindingsSummary()
+  const { session: latestScan, isLoading: sessionLoading } = useLatestCompletedSession()
+  const scanId = scope === 'current' ? latestScan?.id : undefined
+  const filters = { status, severity, confidence, checkId, query: query.trim(), scanId }
+  const { data: findings, isLoading: findingsLoading } = useFindings(filters)
+  const summary = summarize(findings)
+  const isLoading = sessionLoading || findingsLoading
+  const blockedByNoScan = scope === 'current' && !sessionLoading && !latestScan
   const updateStatus = useUpdateFindingStatus()
 
   return (
     <div className="flex flex-col gap-5">
-      <div>
-        <h1 className="text-2xl font-semibold text-[var(--text-primary)]">Security exposure findings</h1>
-        <p className="text-sm text-[var(--text-muted)]">Decision-oriented findings from approved network checks and observable configuration</p>
+      <div className="flex items-end justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-semibold text-[var(--text-primary)]">Security exposure findings</h1>
+          <p className="text-sm text-[var(--text-muted)]">
+            {scope === 'current' ? 'Findings from the last scan only.' : 'Every finding ever recorded, across every scan.'}
+          </p>
+        </div>
+        <div className="flex items-center gap-1 bg-[var(--bg-surface)] border border-[var(--border)] rounded-[var(--radius-sm)] p-1">
+          <button onClick={() => setScope('current')} className={`px-3 py-1.5 text-xs font-medium rounded-[var(--radius-sm)] transition-colors ${scope === 'current' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'}`}>Current scan</button>
+          <button onClick={() => setScope('all')} className={`px-3 py-1.5 text-xs font-medium rounded-[var(--radius-sm)] transition-colors ${scope === 'all' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'}`}>All time</button>
+        </div>
       </div>
 
       <div className="grid grid-cols-5 gap-4">
-        <MetricCard label="Open findings" value={summary?.open} sub="requires review" />
-        <MetricCard label="Critical" value={summary?.critical} sub="immediate attention" tone="danger" />
-        <MetricCard label="High" value={summary?.high} sub="priority remediation" tone="danger" />
-        <MetricCard label="Medium" value={summary?.medium} sub="planned remediation" tone="warn" />
-        <MetricCard label="Affected assets" value={summary?.affected_assets} sub="assets with open findings" />
+        <MetricCard label="Open findings" value={summary.open} sub="requires review" />
+        <MetricCard label="Critical" value={summary.critical} sub="immediate attention" tone="danger" />
+        <MetricCard label="High" value={summary.high} sub="priority remediation" tone="danger" />
+        <MetricCard label="Medium" value={summary.medium} sub="planned remediation" tone="warn" />
+        <MetricCard label="Affected assets" value={summary.affected_assets} sub="assets with open findings" />
       </div>
 
       <div className="card flex items-end gap-3 flex-wrap">
@@ -48,7 +75,9 @@ export default function Findings() {
         <div><label className="block text-xs text-[var(--text-muted)] mb-1.5">Check</label><select value={checkId} onChange={(event) => setCheckId(event.target.value)} className="bg-[var(--bg-surface-2)] border border-[var(--border)] rounded-[var(--radius-sm)] px-3 py-2 text-sm text-[var(--text-primary)]"><option value="">All checks</option>{CHECKS.map((check) => <option key={check} value={check}>{check}</option>)}</select></div>
       </div>
 
-      {!isLoading && (!findings || findings.length === 0) ? (
+      {blockedByNoScan ? (
+        <div className="card"><EmptyState icon={ShieldAlert} title="No completed scan yet" description="Start a scan from the Discovery page, or switch to All time to see historical data." /></div>
+      ) : !isLoading && (!findings || findings.length === 0) ? (
         <div className="card"><EmptyState icon={ShieldAlert} title="No findings match this view" description="Run a scan or adjust the filters to review exposure findings." /></div>
       ) : (
         <div className="flex flex-col gap-3">

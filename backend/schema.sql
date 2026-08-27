@@ -183,6 +183,23 @@ CREATE TABLE IF NOT EXISTS vulnerabilities (
 );
 CREATE INDEX IF NOT EXISTS idx_vulnerabilities_cvss ON vulnerabilities (cvss_base_score DESC NULLS LAST);
 
+-- Layer 5: FIRST.org EPSS exploitation-probability enrichment, attached to
+-- CVEs Layer 4 has already matched. epss_score is 0-1 (30-day exploitation
+-- probability); epss_percentile is 0-1 (rank among all scored CVEs).
+ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS epss_score numeric(6,5) CHECK (epss_score BETWEEN 0 AND 1);
+ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS epss_percentile numeric(6,5) CHECK (epss_percentile BETWEEN 0 AND 1);
+ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS epss_date date;
+CREATE INDEX IF NOT EXISTS idx_vulnerabilities_epss ON vulnerabilities (epss_score DESC NULLS LAST);
+
+-- Layer 6: CISA Known Exploited Vulnerabilities. A KEV match is confirmed
+-- real-world exploitation, not a prediction, so it must outrank CVSS/EPSS
+-- in prioritization (see the ORDER BY in list_vulnerabilities).
+ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS kev_flag boolean NOT NULL DEFAULT false;
+ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS kev_date_added date;
+ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS kev_required_action text;
+ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS kev_due_date date;
+CREATE INDEX IF NOT EXISTS idx_vulnerabilities_kev ON vulnerabilities (kev_flag) WHERE kev_flag;
+
 CREATE TABLE IF NOT EXISTS service_vulnerabilities (
   service_vulnerability_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   service_id uuid NOT NULL REFERENCES services(service_id) ON DELETE CASCADE,

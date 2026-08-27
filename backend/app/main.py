@@ -67,12 +67,13 @@ def services(
     enrichment_status: str | None = None,
     port: int | None = Query(default=None, ge=1, le=65535),
     q: str | None = Query(default=None, max_length=120),
+    scan_id: str | None = None,
 ):
     if confidence and confidence not in {"high", "medium", "low"}:
         raise HTTPException(400, "confidence must be high, medium, or low")
     if enrichment_status and enrichment_status not in {"not_enriched", "cpe_ready", "enriched"}:
         raise HTTPException(400, "invalid enrichment status")
-    return {"data": repository.list_services(asset_id, confidence, enrichment_status, port, q)}
+    return {"data": repository.list_services(asset_id, confidence, enrichment_status, port, q, scan_id)}
 
 
 @app.get("/api/v1/services/summary")
@@ -87,8 +88,9 @@ def findings(
     confidence: str | None = None,
     check_id: str | None = None,
     q: str | None = Query(default=None, max_length=120),
+    scan_id: str | None = None,
 ):
-    return {"data": repository.list_findings(status, severity, confidence, check_id, q)}
+    return {"data": repository.list_findings(status, severity, confidence, check_id, q, scan_id)}
 
 
 @app.get("/api/v1/findings/summary")
@@ -108,8 +110,9 @@ def patch_finding(finding_id: str, payload: FindingUpdate):
 def vulnerabilities(
     status: str | None = "active", severity: str | None = None,
     confidence: str | None = None, q: str | None = Query(default=None, max_length=120),
+    scan_id: str | None = None,
 ):
-    return {"data": repository.list_vulnerabilities(status, severity, confidence, q)}
+    return {"data": repository.list_vulnerabilities(status, severity, confidence, q, scan_id)}
 
 
 @app.get("/api/v1/vulnerabilities/summary")

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Binary, Filter, Search, ServerCog } from 'lucide-react'
-import { useServices, useServicesSummary } from '../hooks/useServices'
+import { useServices } from '../hooks/useServices'
+import { useLatestCompletedSession } from '../hooks/useScanSessions'
 import ConfidencePill from '../components/ConfidencePill'
 import EmptyState from '../components/EmptyState'
 import MetricCard from '../components/MetricCard'
@@ -12,28 +13,54 @@ function EnrichmentPill({ service }) {
   return <span className="pill pill--warn">Not enriched</span>
 }
 
+// Computed from whatever the table is actually showing, so the cards and the
+// rows below them always agree — instead of a separately-scoped summary call.
+function summarize(services) {
+  const list = services || []
+  return {
+    total: list.length,
+    exposed_assets: new Set(list.map((s) => s.asset_id)).size,
+    high_confidence: list.filter((s) => s.confidence === 'high').length,
+    cpe_ready: list.filter((s) => s.cpe && s.enrichment_status !== 'not_enriched').length,
+    not_enriched: list.filter((s) => s.enrichment_status === 'not_enriched').length,
+  }
+}
+
 export default function Services() {
+  const [scope, setScope] = useState('current')
   const [confidence, setConfidence] = useState('')
   const [enrichmentStatus, setEnrichmentStatus] = useState('')
   const [query, setQuery] = useState('')
   const [port, setPort] = useState('')
-  const filters = { confidence, enrichmentStatus, query: query.trim(), port }
-  const { data: services, isLoading } = useServices(filters)
-  const { data: summary } = useServicesSummary()
+  const { session: latestScan, isLoading: sessionLoading } = useLatestCompletedSession()
+  const scanId = scope === 'current' ? latestScan?.id : undefined
+  const filters = { confidence, enrichmentStatus, query: query.trim(), port, scanId }
+  const { data: services, isLoading: servicesLoading } = useServices(filters)
+  const summary = summarize(services)
+  const isLoading = sessionLoading || servicesLoading
+  const blockedByNoScan = scope === 'current' && !sessionLoading && !latestScan
 
   return (
     <div className="flex flex-col gap-5">
-      <div>
-        <h1 className="text-2xl font-semibold text-[var(--text-primary)]">Service exposure</h1>
-        <p className="text-sm text-[var(--text-muted)]">Products, versions and CPE evidence observed on discovered assets</p>
+      <div className="flex items-end justify-between gap-4 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-semibold text-[var(--text-primary)]">Service exposure</h1>
+          <p className="text-sm text-[var(--text-muted)]">
+            {scope === 'current' ? "Products and CPE evidence from the last scan — a port that's now closed won't linger here." : 'Every service ever observed, across every scan (may include ports no longer open).'}
+          </p>
+        </div>
+        <div className="flex items-center gap-1 bg-[var(--bg-surface)] border border-[var(--border)] rounded-[var(--radius-sm)] p-1">
+          <button onClick={() => setScope('current')} className={`px-3 py-1.5 text-xs font-medium rounded-[var(--radius-sm)] transition-colors ${scope === 'current' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'}`}>Current scan</button>
+          <button onClick={() => setScope('all')} className={`px-3 py-1.5 text-xs font-medium rounded-[var(--radius-sm)] transition-colors ${scope === 'all' ? 'bg-[var(--accent)] text-white' : 'text-[var(--text-muted)] hover:text-[var(--text-primary)]'}`}>All time</button>
+        </div>
       </div>
 
       <div className="grid grid-cols-5 gap-4">
-        <MetricCard label="Open services" value={summary?.total} sub="persistent exposures" />
-        <MetricCard label="Exposed assets" value={summary?.exposed_assets} sub="assets with open ports" />
-        <MetricCard label="High confidence" value={summary?.high_confidence} sub="strong fingerprint evidence" tone="ok" />
-        <MetricCard label="CPE ready" value={summary?.cpe_ready} sub="eligible for intelligence" />
-        <MetricCard label="Not enriched" value={summary?.not_enriched} sub="no trusted CPE match" tone="warn" />
+        <MetricCard label="Open services" value={summary.total} sub={scope === 'current' ? 'in the last scan' : 'ever observed'} />
+        <MetricCard label="Exposed assets" value={summary.exposed_assets} sub="assets with open ports" />
+        <MetricCard label="High confidence" value={summary.high_confidence} sub="strong fingerprint evidence" tone="ok" />
+        <MetricCard label="CPE ready" value={summary.cpe_ready} sub="eligible for intelligence" />
+        <MetricCard label="Not enriched" value={summary.not_enriched} sub="no trusted CPE match" tone="warn" />
       </div>
 
       <div className="card flex items-end gap-3 flex-wrap">
@@ -62,7 +89,9 @@ export default function Services() {
       </div>
 
       <div className="card">
-        {!isLoading && (!services || services.length === 0) ? (
+        {blockedByNoScan ? (
+          <EmptyState icon={ServerCog} title="No completed scan yet" description="Start a scan from the Discovery page, or switch to All time to see historical data." />
+        ) : !isLoading && (!services || services.length === 0) ? (
           <EmptyState icon={ServerCog} title="No service fingerprints yet" description="Run a scan to fingerprint exposed services on discovered assets." />
         ) : (
           <table className="w-full text-sm">

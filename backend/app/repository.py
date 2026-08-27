@@ -154,12 +154,16 @@ def scan_history():
         return [_serialize(row) for row in rows]
 
 
-def list_services(asset_id=None, confidence=None, enrichment_status=None, port=None, query=None):
+def list_services(asset_id=None, confidence=None, enrichment_status=None, port=None, query=None, scan_id=None):
     clauses, params = ["s.state = 'open'"], []
     if asset_id: clauses.append("s.asset_id = %s"); params.append(asset_id)
     if confidence: clauses.append("s.confidence = %s"); params.append(confidence)
     if enrichment_status: clauses.append("s.enrichment_status = %s"); params.append(enrichment_status)
     if port: clauses.append("s.port = %s"); params.append(port)
+    if scan_id:
+        clauses.append("""EXISTS (SELECT 1 FROM observed_services os JOIN asset_observations ao ON ao.observation_id=os.observation_id
+          WHERE ao.asset_id=s.asset_id AND os.port=s.port AND os.protocol=s.protocol AND ao.scan_id=%s)""")
+        params.append(scan_id)
     if query:
         clauses.append("(a.hostname ILIKE %s OR host(a.ip_address) ILIKE %s OR s.service_name ILIKE %s OR s.product ILIKE %s OR s.version ILIKE %s OR s.cpe ILIKE %s)")
         params.extend([f"%{query}%"] * 6)
@@ -213,12 +217,13 @@ def store_exposure_results(session_id, hosts: list[HostObservation]):
     return created
 
 
-def list_findings(status=None, severity=None, confidence=None, check_id=None, query=None):
+def list_findings(status=None, severity=None, confidence=None, check_id=None, query=None, scan_id=None):
     clauses, params = [], []
     if status: clauses.append("f.status=%s"); params.append(status)
     if severity: clauses.append("f.severity=%s"); params.append(severity)
     if confidence: clauses.append("f.confidence=%s"); params.append(confidence)
     if check_id: clauses.append("f.check_id=%s"); params.append(check_id)
+    if scan_id: clauses.append("EXISTS (SELECT 1 FROM finding_observations fo WHERE fo.finding_id=f.finding_id AND fo.scan_id=%s)"); params.append(scan_id)
     if query:
         clauses.append("(f.title ILIKE %s OR f.evidence ILIKE %s OR a.hostname ILIKE %s OR host(a.ip_address) ILIKE %s)")
         params.extend([f"%{query}%"] * 4)
@@ -246,7 +251,7 @@ def update_finding_status(finding_id, status):
         return _serialize(conn.execute("UPDATE findings SET status=%s,updated_at=now() WHERE finding_id=%s RETURNING *", (status,finding_id)).fetchone())
 
 
-def list_vulnerabilities(status=None, severity=None, confidence=None, query=None):
+def list_vulnerabilities(status=None, severity=None, confidence=None, query=None, scan_id=None):
     clauses, params = [], []
     if status: clauses.append("sv.status=%s"); params.append(status)
     if severity: clauses.append("upper(v.cvss_base_severity)=%s"); params.append(severity.upper())
@@ -254,14 +259,20 @@ def list_vulnerabilities(status=None, severity=None, confidence=None, query=None
     if query:
         clauses.append("(v.cve_id ILIKE %s OR v.description ILIKE %s OR a.hostname ILIKE %s OR host(a.ip_address) ILIKE %s OR s.product ILIKE %s OR s.cpe ILIKE %s)")
         params.extend([f"%{query}%"] * 6)
+    if scan_id:
+        clauses.append("""EXISTS (SELECT 1 FROM observed_services os JOIN asset_observations ao ON ao.observation_id=os.observation_id
+          WHERE ao.asset_id=s.asset_id AND os.port=s.port AND os.protocol=s.protocol AND ao.scan_id=%s)""")
+        params.append(scan_id)
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     sql = f"""SELECT sv.service_vulnerability_id,sv.service_id,sv.cve_id,sv.matched_cpe,sv.match_confidence,sv.match_wording,
       sv.match_reason,sv.applicability_status,sv.status,sv.first_seen,sv.last_seen,sv.last_checked_at,
       v.description,v.published_at,v.modified_at,v.vuln_status,v.cvss_version,v.cvss_base_score,v.cvss_base_severity,v.cvss_vector,v.nvd_last_refreshed_at,
+      v.epss_score,v.epss_percentile,v.epss_date,
+      v.kev_flag,v.kev_date_added,v.kev_required_action,v.kev_due_date,
       s.asset_id,s.port,s.protocol,s.service_name,s.product,s.version,s.cpe,host(a.ip_address) AS ip_address,a.hostname,a.device_type
       FROM service_vulnerabilities sv JOIN vulnerabilities v ON v.cve_id=sv.cve_id JOIN services s ON s.service_id=sv.service_id
       JOIN assets a ON a.asset_id=s.asset_id {where}
-      ORDER BY v.cvss_base_score DESC NULLS LAST,sv.match_confidence,sv.last_seen DESC"""
+      ORDER BY v.kev_flag DESC, v.cvss_base_score DESC NULLS LAST,sv.match_confidence,sv.last_seen DESC"""
     with connection() as conn:
         return [_serialize(row) for row in conn.execute(sql, params).fetchall()]
 
