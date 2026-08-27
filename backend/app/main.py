@@ -12,7 +12,8 @@ from .scan_service import ScanCoordinator
 from .scanner import validate_authorized_subnet
 from .network import connected_ipv4_networks
 from .schemas import AssetUpdate, FindingUpdate, ScanStart, VulnerabilityMatchUpdate
-from .epss import coordinator as epss_coordinator
+from .nvd import coordinator as nvd_coordinator
+from .epss import coordinator as epss_coordinator, recalculate_organization_risk
 
 
 class EventHub:
@@ -37,7 +38,11 @@ coordinator = ScanCoordinator(hub.publish)
 async def lifespan(_app):
     initialize_schema()
     hub.loop = asyncio.get_running_loop()
-    yield
+    epss_coordinator.start(hub.publish)
+    try:
+        yield
+    finally:
+        epss_coordinator.stop()
 
 
 app = FastAPI(title="SecureOps Asset Discovery API", version="1.0.0", lifespan=lifespan)
@@ -125,6 +130,27 @@ def patch_vulnerability_match(match_id: str, payload: VulnerabilityMatchUpdate):
     return {"data": result}
 
 
+@app.get("/api/v1/epss/intelligence")
+def epss_intelligence(status: str | None = "active", q: str | None = Query(default=None, max_length=120)):
+    return {"data": repository.list_epss_intelligence(status, q)}
+
+
+@app.get("/api/v1/epss/summary")
+def epss_summary():
+    return {"data": repository.epss_summary()}
+
+
+@app.get("/api/v1/epss/runs")
+def epss_runs(limit: int = Query(20, ge=1, le=100)):
+    return {"data": repository.list_epss_runs(limit)}
+
+
+@app.post("/api/v1/epss/refresh", status_code=202)
+def refresh_epss():
+    run_id = epss_coordinator.schedule(trigger_source="manual", force=True)
+    return {"epss_run_id": run_id, "status": "queued"}
+
+
 @app.get("/api/v1/enrichment/runs")
 def enrichment_runs(limit: int = Query(20, ge=1, le=100)):
     return {"data": repository.list_enrichment_runs(limit)}
@@ -136,21 +162,11 @@ def refresh_enrichment():
     return {"enrichment_run_id": job_id, "status": "queued"}
 
 
-@app.get("/api/v1/enrichment/epss/runs")
-def epss_enrichment_runs(limit: int = Query(20, ge=1, le=100)):
-    return {"data": repository.list_epss_enrichment_runs(limit)}
-
-
-@app.post("/api/v1/enrichment/epss/refresh", status_code=202)
-def refresh_epss_enrichment():
-    job_id = epss_coordinator.schedule(None, "manual")
-    return {"enrichment_run_id": job_id, "status": "queued"}
-
-
 @app.patch("/api/v1/devices/{asset_id}")
 def patch_device(asset_id: str, payload: AssetUpdate):
     result = repository.update_asset(asset_id, payload.model_dump())
     if not result: raise HTTPException(404, "Asset not found or no changes supplied")
+    recalculate_organization_risk()
     hub.publish("ASSET_UPDATED", result)
     return {"data": result}
 

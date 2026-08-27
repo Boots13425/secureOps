@@ -14,6 +14,7 @@ import {
   ServerCog,
   ShieldAlert,
   DatabaseZap,
+  TrendingUp,
 } from 'lucide-react'
 import NextScanWidget from './NextScanWidget'
 
@@ -23,6 +24,7 @@ const navItems = [
   { to: '/services', label: 'Services & CPE', icon: ServerCog },
   { to: '/findings', label: 'Exposure Findings', icon: ShieldAlert },
   { to: '/vulnerabilities', label: 'CVE Intelligence', icon: DatabaseZap },
+  { to: '/epss', label: 'EPSS Probability', icon: TrendingUp },
   { to: '/discovery', label: 'Discovery / Scan', icon: ScanLine },
   { to: '/sessions', label: 'Scan Sessions', icon: Radar },
   { to: '/settings', label: 'Settings', icon: Settings },
