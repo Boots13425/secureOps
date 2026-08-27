@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { RefreshCw, Square, Cpu, HardDrive, TrendingUp, Boxes } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import { format } from 'date-fns'
-import { useDevices, useScanActivity, useScanHistory } from '../hooks/useDevices'
+import { useCurrentActivity, useCurrentDevices, useDevices, useScanHistory } from '../hooks/useDevices'
 import { useScanSessions, useStartSession, useStopSession } from '../hooks/useScanSessions'
 import { useServicesSummary } from '../hooks/useServices'
 import MetricCard from '../components/MetricCard'
@@ -54,8 +54,13 @@ function BreakdownBars({ data }) {
 const DURATION_OPTIONS = [5, 6, 7, 8, 9, 10]
 
 export default function Dashboard() {
-  const { data: devices, isLoading } = useDevices()
-  const { data: activity } = useScanActivity()
+  // Everything on this page describes "what's here right now" (the latest
+  // scan), except Missing/offline and the trend chart below — those only
+  // mean something when compared against the full history, so they read
+  // from allDevices (useDevices, unfiltered) instead of the current-scan list.
+  const { data: devices, isLoading, latestScan, hasCompletedScan } = useCurrentDevices()
+  const { data: allDevices } = useDevices()
+  const { data: activity, hasCompletedScan: hasActivityScan } = useCurrentActivity()
   const { data: history } = useScanHistory()
   const { data: sessions } = useScanSessions()
   const { data: serviceSummary } = useServicesSummary()
@@ -75,6 +80,7 @@ export default function Dashboard() {
   }
 
   const metrics = computeMetrics(devices)
+  const missingCount = (allDevices || []).filter((d) => ['missing', 'offline'].includes(d.status)).length
   const osBreakdown = devices ? computeBreakdown(devices, (d) => d.os_name, 'Not identified') : []
   const deviceTypeBreakdown = devices ? computeBreakdown(devices, (d) => d.device_type, 'Unknown') : []
   const recentDevices = devices ? [...devices].sort((a, b) => new Date(b.last_seen) - new Date(a.last_seen)).slice(0, 7) : []
@@ -127,25 +133,25 @@ export default function Dashboard() {
         <MetricCard
           label="Total Devices"
           value={metrics?.total}
-          sub={metrics ? (metrics.newThisWeek ? `+${metrics.newThisWeek} this week` : '') : 'Not scanned yet'}
+          sub={metrics ? 'found in the last scan' : hasCompletedScan ? '' : 'No completed scan yet'}
         />
-        <MetricCard label="Observed" value={metrics?.present} sub={metrics ? 'present in latest state' : 'Not scanned yet'} tone="ok" />
+        <MetricCard label="Observed" value={metrics?.present} sub={metrics ? 'all responded in this scan' : hasCompletedScan ? '' : 'No completed scan yet'} tone="ok" />
         <MetricCard
           label="Missing / offline"
-          value={metrics?.missing}
-          sub={metrics ? 'not observed in current state' : 'Not scanned yet'}
+          value={missingCount}
+          sub="seen before, absent from the last scan"
           tone="danger"
         />
         <MetricCard
           label="Unknown"
           value={metrics?.unknown}
-          sub={metrics ? 'requires classification' : 'Not scanned yet'}
+          sub={metrics ? 'requires classification' : hasCompletedScan ? '' : 'No completed scan yet'}
           tone="warn"
         />
         <MetricCard
           label="Approved"
           value={metrics?.approved}
-          sub={metrics ? 'organizationally approved' : 'Not scanned yet'}
+          sub={metrics ? 'organizationally approved' : hasCompletedScan ? '' : 'No completed scan yet'}
         />
       </div>
 
@@ -203,8 +209,8 @@ export default function Dashboard() {
       <div className="card">
         <div className="flex items-center justify-between mb-2">
           <div>
-            <h2 className="text-sm font-semibold text-[var(--text-primary)]">Devices</h2>
-            <p className="text-xs text-[var(--text-muted)]">Discovered computers, servers and network devices</p>
+            <h2 className="text-sm font-semibold text-[var(--text-primary)]">Devices — latest scan</h2>
+            <p className="text-xs text-[var(--text-muted)]">Computers, servers and network devices found in the last scan</p>
           </div>
           {recentDevices.length > 0 && (
             <a href="/devices" className="text-xs text-[var(--accent)] hover:underline">View all</a>
@@ -262,13 +268,18 @@ export default function Dashboard() {
 
       <div className="card">
         <div className="flex items-center justify-between mb-3">
-          <h2 className="text-sm font-semibold text-[var(--text-primary)]">Scan activity</h2>
+          <div>
+            <h2 className="text-sm font-semibold text-[var(--text-primary)]">Scan activity</h2>
+            <p className="text-xs text-[var(--text-muted)]">Latest scan only — for the full cross-scan log, see Discovery / Scan</p>
+          </div>
           {activity && activity.length > 0 && (
             <a href="/discovery" className="text-xs text-[var(--accent)] hover:underline">View all</a>
           )}
         </div>
-        {!activity || activity.length === 0 ? (
-          <EmptyState icon={TrendingUp} title="No scan activity yet" description="Activity will appear here once a scan runs." />
+        {!hasActivityScan ? (
+          <EmptyState icon={TrendingUp} title="No completed scan yet" description="Activity will appear here once a scan finishes." />
+        ) : !activity || activity.length === 0 ? (
+          <EmptyState icon={TrendingUp} title="No activity recorded for the last scan" description="This can happen for a very short or empty scan." />
         ) : (
           <div className="flex flex-col gap-3">
             {activity.map((event) => (
@@ -288,7 +299,7 @@ export default function Dashboard() {
         <div className="card">
           <div className="text-xs text-[var(--text-muted)] mb-1">Last Network Scan</div>
           <div className="text-[var(--text-primary)] font-medium">
-            {isLoading ? '…' : recentDevices[0] ? timeAgo(recentDevices[0].last_seen) : 'Never'}
+            {isLoading ? '…' : latestScan?.finished_at ? timeAgo(latestScan.finished_at) : 'Never'}
           </div>
         </div>
         <div className="card">
@@ -297,8 +308,8 @@ export default function Dashboard() {
         </div>
         <div className="card">
           <div className="text-xs text-[var(--text-muted)] mb-1">Network Status</div>
-          <div className={`font-medium ${recentDevices.length ? 'text-[var(--ok)]' : 'text-[var(--warn)]'}`}>
-            {recentDevices.length ? 'Active' : 'Not Started'}
+          <div className={`font-medium ${hasCompletedScan ? 'text-[var(--ok)]' : 'text-[var(--warn)]'}`}>
+            {hasCompletedScan ? 'Active' : 'Not Started'}
           </div>
         </div>
         <div className="card">
