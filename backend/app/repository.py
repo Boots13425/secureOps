@@ -281,4 +281,7 @@ def update_vulnerability_match_status(match_id, status):
 
 def list_enrichment_runs(limit=20):
     with connection() as conn:
-        return [_serialize(row) for row in conn.execute("SELECT * FROM nvd_enrichment_runs ORDER BY queued_at DESC LIMIT %s", (limit,)).fetchall()]
+        return [_serialize(row) for row in conn.execute
+            ("SELECT * FROM epss_enrichment_runs ORDER BY created_at DESC LIMIT %s",
+            (limit,)
+        ).fetchall()]

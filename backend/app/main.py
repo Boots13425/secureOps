@@ -12,7 +12,7 @@ from .scan_service import ScanCoordinator
 from .scanner import validate_authorized_subnet
 from .network import connected_ipv4_networks
 from .schemas import AssetUpdate, FindingUpdate, ScanStart, VulnerabilityMatchUpdate
-from .nvd import coordinator as nvd_coordinator
+from .epss import coordinator as epss_coordinator
 
 
 class EventHub:
@@ -133,6 +133,17 @@ def enrichment_runs(limit: int = Query(20, ge=1, le=100)):
 @app.post("/api/v1/enrichment/refresh", status_code=202)
 def refresh_enrichment():
     job_id = nvd_coordinator.schedule(None, "manual")
+    return {"enrichment_run_id": job_id, "status": "queued"}
+
+
+@app.get("/api/v1/enrichment/epss/runs")
+def epss_enrichment_runs(limit: int = Query(20, ge=1, le=100)):
+    return {"data": repository.list_epss_enrichment_runs(limit)}
+
+
+@app.post("/api/v1/enrichment/epss/refresh", status_code=202)
+def refresh_epss_enrichment():
+    job_id = epss_coordinator.schedule(None, "manual")
     return {"enrichment_run_id": job_id, "status": "queued"}
 
 
