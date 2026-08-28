@@ -39,6 +39,11 @@ export async function getDeviceServices(assetId) {
   return data.data
 }
 
+export async function patchDevice(assetId, payload) {
+  const { data } = await http.patch(`/devices/${assetId}`, payload)
+  return data.data
+}
+
 export async function getScanActivity(limit = 8, scanId) {
   if (USE_MOCKS) {
     await delay(200)
@@ -182,6 +187,29 @@ export async function getKevRuns() {
 export async function refreshKev() {
   const { data } = await http.post('/kev/refresh')
   return data
+}
+
+export async function getTelemetryChanges({ toScanId, fromScanId } = {}) {
+  const params = {}
+  if (toScanId) params.to_scan_id = toScanId
+  if (fromScanId) params.from_scan_id = fromScanId
+  const { data } = await http.get('/telemetry/changes', { params })
+  return data.data
+}
+
+export async function getTelemetryTrend(limit = 10) {
+  const { data } = await http.get('/telemetry/trend', { params: { limit } })
+  return data.data
+}
+
+export async function getRiskAssets() {
+  const { data } = await http.get('/risk/assets')
+  return data.data
+}
+
+export async function getRiskSummary() {
+  const { data } = await http.get('/risk/summary')
+  return data.data
 }
 
 export async function getScanNetwork() {

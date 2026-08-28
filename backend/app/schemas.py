@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 AssetStatus = Literal["known", "unknown", "approved", "missing", "offline"]
 DeviceType = Literal["PC", "server", "router", "printer", "phone", "unknown"]
+AssetCriticality = Literal["low", "normal", "high", "critical"]
 
 
 class ScanStart(BaseModel):
@@ -15,6 +16,7 @@ class ScanStart(BaseModel):
 class AssetUpdate(BaseModel):
     status: AssetStatus | None = None
     device_type: DeviceType | None = None
+    criticality: AssetCriticality | None = None
 
 
 class FindingUpdate(BaseModel):

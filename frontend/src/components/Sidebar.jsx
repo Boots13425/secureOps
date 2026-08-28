@@ -17,6 +17,8 @@ import {
   History,
   TrendingUp,
   Flame,
+  GitCompare,
+  BrainCircuit,
 } from 'lucide-react'
 import NextScanWidget from './NextScanWidget'
 
@@ -29,6 +31,8 @@ const navItems = [
   { to: '/vulnerabilities', label: 'CVE Intelligence', icon: DatabaseZap },
   { to: '/epss', label: 'EPSS Probability', icon: TrendingUp },
   { to: '/kev', label: 'Known Exploited', icon: Flame },
+  { to: '/telemetry', label: 'Changes & Trends', icon: GitCompare },
+  { to: '/risk', label: 'Risk Engine', icon: BrainCircuit },
   { to: '/discovery', label: 'Discovery / Scan', icon: ScanLine },
   { to: '/sessions', label: 'Scan Sessions', icon: Radar },
   { to: '/settings', label: 'Settings', icon: Settings },

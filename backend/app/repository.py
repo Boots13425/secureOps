@@ -37,7 +37,7 @@ def list_assets(status=None, device_type=None, scan_id=None):
 
 
 def update_asset(asset_id, values):
-    allowed = {key: value for key, value in values.items() if value is not None and key in {"status", "device_type"}}
+    allowed = {key: value for key, value in values.items() if value is not None and key in {"status", "device_type", "criticality"}}
     if not allowed: return None
     assignments = ", ".join(f"{key} = %s" for key in allowed)
     with connection() as conn:
@@ -390,3 +390,225 @@ def update_vulnerability_match_status(match_id, status):
 def list_enrichment_runs(limit=20):
     with connection() as conn:
         return [_serialize(row) for row in conn.execute("SELECT * FROM nvd_enrichment_runs ORDER BY queued_at DESC LIMIT %s", (limit,)).fetchall()]
+
+
+# Layer 7 — every scan already snapshots its own asset_observations/observed_services
+# rows, so "what changed" is just a diff between two scans' snapshots rather than
+# needing any new storage.
+def telemetry_changes(to_scan_id=None, from_scan_id=None):
+    with connection() as conn:
+        if not to_scan_id:
+            latest = conn.execute("SELECT id FROM scan_sessions WHERE status='COMPLETED' ORDER BY started_at DESC LIMIT 1").fetchone()
+            to_scan_id = latest["id"] if latest else None
+        if not to_scan_id:
+            return {"to_scan": None, "from_scan": None, "baseline": False, "new_devices": [], "missing_devices": [], "port_changes": [], "config_changes": [], "finding_changes": []}
+
+        if not from_scan_id:
+            previous = conn.execute(
+                "SELECT id FROM scan_sessions WHERE status='COMPLETED' AND started_at < (SELECT started_at FROM scan_sessions WHERE id=%s) ORDER BY started_at DESC LIMIT 1",
+                (to_scan_id,),
+            ).fetchone()
+            from_scan_id = previous["id"] if previous else None
+
+        to_scan = _serialize(conn.execute("SELECT id,started_at FROM scan_sessions WHERE id=%s", (to_scan_id,)).fetchone())
+        if not from_scan_id:
+            return {"to_scan": to_scan, "from_scan": None, "baseline": True, "new_devices": [], "missing_devices": [], "port_changes": [], "config_changes": [], "finding_changes": []}
+        from_scan = _serialize(conn.execute("SELECT id,started_at FROM scan_sessions WHERE id=%s", (from_scan_id,)).fetchone())
+
+        new_devices = [_serialize(row) for row in conn.execute("""
+          SELECT a.asset_id,host(a.ip_address) AS ip_address,a.hostname,a.device_type
+          FROM assets a
+          WHERE EXISTS (SELECT 1 FROM asset_observations o WHERE o.asset_id=a.asset_id AND o.scan_id=%s)
+            AND NOT EXISTS (SELECT 1 FROM asset_observations o WHERE o.asset_id=a.asset_id AND o.scan_id=%s)
+          ORDER BY a.hostname NULLS LAST""", (to_scan_id, from_scan_id)).fetchall()]
+
+        missing_devices = [_serialize(row) for row in conn.execute("""
+          SELECT a.asset_id,host(a.ip_address) AS ip_address,a.hostname,a.device_type
+          FROM assets a
+          WHERE EXISTS (SELECT 1 FROM asset_observations o WHERE o.asset_id=a.asset_id AND o.scan_id=%s)
+            AND NOT EXISTS (SELECT 1 FROM asset_observations o WHERE o.asset_id=a.asset_id AND o.scan_id=%s)
+          ORDER BY a.hostname NULLS LAST""", (from_scan_id, to_scan_id)).fetchall()]
+
+        port_changes = [_serialize(row) for row in conn.execute("""
+          WITH to_ports AS (
+            SELECT ao.asset_id,os.port,os.protocol,os.service_name,os.product,os.version
+            FROM asset_observations ao JOIN observed_services os ON os.observation_id=ao.observation_id
+            WHERE ao.scan_id=%(to)s AND os.state='open'
+          ), from_ports AS (
+            SELECT ao.asset_id,os.port,os.protocol,os.service_name,os.product,os.version
+            FROM asset_observations ao JOIN observed_services os ON os.observation_id=ao.observation_id
+            WHERE ao.scan_id=%(from)s AND os.state='open'
+          )
+          SELECT t.asset_id,host(a.ip_address) AS ip_address,a.hostname,t.port,t.protocol,t.service_name,t.product,
+            NULL AS old_version,t.version AS new_version,'opened' AS change
+          FROM to_ports t JOIN assets a ON a.asset_id=t.asset_id
+          LEFT JOIN from_ports f ON f.asset_id=t.asset_id AND f.port=t.port AND f.protocol=t.protocol
+          WHERE f.port IS NULL
+          UNION ALL
+          SELECT f.asset_id,host(a.ip_address) AS ip_address,a.hostname,f.port,f.protocol,f.service_name,f.product,
+            f.version AS old_version,NULL AS new_version,'closed' AS change
+          FROM from_ports f JOIN assets a ON a.asset_id=f.asset_id
+          LEFT JOIN to_ports t ON t.asset_id=f.asset_id AND t.port=f.port AND t.protocol=f.protocol
+          WHERE t.port IS NULL
+          UNION ALL
+          SELECT t.asset_id,host(a.ip_address) AS ip_address,a.hostname,t.port,t.protocol,t.service_name,t.product,
+            f.version AS old_version,t.version AS new_version,'updated' AS change
+          FROM to_ports t
+          JOIN from_ports f ON f.asset_id=t.asset_id AND f.port=t.port AND f.protocol=t.protocol
+          JOIN assets a ON a.asset_id=t.asset_id
+          WHERE t.version IS DISTINCT FROM f.version AND (t.version IS NOT NULL OR f.version IS NOT NULL)
+          ORDER BY hostname NULLS LAST,port""", {"to": to_scan_id, "from": from_scan_id}).fetchall()]
+
+        # Covers every field asset_observations actually snapshots per scan.
+        # device_type is deliberately excluded: it lives only on the current
+        # `assets` row, not per-observation, so there is no history to diff.
+        config_changes = [_serialize(row) for row in conn.execute("""
+          SELECT t.asset_id,host(a.ip_address) AS ip_address,a.hostname,'os' AS field,f.os_family AS old_value,t.os_family AS new_value
+          FROM asset_observations t JOIN asset_observations f ON f.asset_id=t.asset_id AND f.scan_id=%(from)s
+          JOIN assets a ON a.asset_id=t.asset_id
+          WHERE t.scan_id=%(to)s AND t.os_family IS DISTINCT FROM f.os_family
+          UNION ALL
+          SELECT t.asset_id,host(a.ip_address) AS ip_address,a.hostname,'vendor' AS field,f.vendor AS old_value,t.vendor AS new_value
+          FROM asset_observations t JOIN asset_observations f ON f.asset_id=t.asset_id AND f.scan_id=%(from)s
+          JOIN assets a ON a.asset_id=t.asset_id
+          WHERE t.scan_id=%(to)s AND t.vendor IS DISTINCT FROM f.vendor
+          UNION ALL
+          SELECT t.asset_id,host(a.ip_address) AS ip_address,a.hostname,'mac_address' AS field,f.mac_address::text AS old_value,t.mac_address::text AS new_value
+          FROM asset_observations t JOIN asset_observations f ON f.asset_id=t.asset_id AND f.scan_id=%(from)s
+          JOIN assets a ON a.asset_id=t.asset_id
+          WHERE t.scan_id=%(to)s AND t.mac_address IS DISTINCT FROM f.mac_address
+          UNION ALL
+          SELECT t.asset_id,host(a.ip_address) AS ip_address,a.hostname,'hostname' AS field,f.hostname AS old_value,t.hostname AS new_value
+          FROM asset_observations t JOIN asset_observations f ON f.asset_id=t.asset_id AND f.scan_id=%(from)s
+          JOIN assets a ON a.asset_id=t.asset_id
+          WHERE t.scan_id=%(to)s AND t.hostname IS DISTINCT FROM f.hostname
+          ORDER BY hostname NULLS LAST""", {"to": to_scan_id, "from": from_scan_id}).fetchall()]
+
+        # Layer 3 findings are observed per-scan too (finding_observations),
+        # so a finding appearing/disappearing between scans is just another
+        # diff over existing data, same as the checks above.
+        finding_changes = [_serialize(row) for row in conn.execute("""
+          SELECT f.finding_id,f.title,f.severity,f.check_id,host(a.ip_address) AS ip_address,a.hostname,'new' AS change
+          FROM findings f JOIN assets a ON a.asset_id=f.asset_id
+          WHERE EXISTS (SELECT 1 FROM finding_observations fo WHERE fo.finding_id=f.finding_id AND fo.scan_id=%(to)s)
+            AND NOT EXISTS (SELECT 1 FROM finding_observations fo WHERE fo.finding_id=f.finding_id AND fo.scan_id=%(from)s)
+          UNION ALL
+          SELECT f.finding_id,f.title,f.severity,f.check_id,host(a.ip_address) AS ip_address,a.hostname,'resolved' AS change
+          FROM findings f JOIN assets a ON a.asset_id=f.asset_id
+          WHERE EXISTS (SELECT 1 FROM finding_observations fo WHERE fo.finding_id=f.finding_id AND fo.scan_id=%(from)s)
+            AND NOT EXISTS (SELECT 1 FROM finding_observations fo WHERE fo.finding_id=f.finding_id AND fo.scan_id=%(to)s)
+          ORDER BY hostname NULLS LAST""", {"to": to_scan_id, "from": from_scan_id}).fetchall()]
+
+        return {"to_scan": to_scan, "from_scan": from_scan, "baseline": False,
+                "new_devices": new_devices, "missing_devices": missing_devices,
+                "port_changes": port_changes, "config_changes": config_changes,
+                "finding_changes": finding_changes}
+
+
+# Layer 8 — combines severity (Layer 4), likelihood (Layer 5/6), exposure
+# (Layer 3 findings), and organizational criticality (set by a person, since
+# nothing in a scan can tell the system how much an asset matters) into one
+# 0-100 per-asset risk score. A confirmed KEV match always forces the band to
+# 'critical', matching the same real-world-exploitation-outranks-everything
+# rule used on the Vulnerabilities/EPSS/KEV pages.
+#
+# Shared as one constant (rather than copy-pasted into telemetry_trend below)
+# so the risk trend line and the Risk Engine page can never silently drift
+# out of agreement with each other.
+_ASSET_RISK_SCORED_CTE = """
+  WITH vuln_agg AS (
+    SELECT s.asset_id,
+      max(v.cvss_base_score) AS max_cvss,
+      max(e.epss_score) AS max_epss,
+      bool_or(v.kev_flag) AS has_kev,
+      count(*) AS active_vuln_count
+    FROM service_vulnerabilities sv
+    JOIN vulnerabilities v ON v.cve_id=sv.cve_id
+    JOIN services s ON s.service_id=sv.service_id
+    LEFT JOIN epss_current_scores e ON e.cve_id=v.cve_id
+    WHERE sv.status='active'
+    GROUP BY s.asset_id
+  ), finding_agg AS (
+    -- Weighted rather than a flat count: a critical finding should move the
+    -- needle more than several mediums combined, not count the same as a high.
+    SELECT asset_id,
+      count(*) FILTER (WHERE severity='critical') AS critical_finding_count,
+      count(*) FILTER (WHERE severity='high') AS high_finding_count,
+      count(*) FILTER (WHERE severity='medium') AS medium_finding_count,
+      count(*) AS open_finding_count
+    FROM findings
+    WHERE status='open'
+    GROUP BY asset_id
+  ), scored AS (
+    SELECT a.asset_id,host(a.ip_address) AS ip_address,a.hostname,a.device_type,a.status,a.criticality,
+      COALESCE(va.max_cvss,0) AS max_cvss,
+      COALESCE(va.max_epss,0) AS max_epss,
+      COALESCE(va.has_kev,false) AS has_kev,
+      COALESCE(va.active_vuln_count,0) AS active_vuln_count,
+      COALESCE(fa.critical_finding_count,0) AS critical_finding_count,
+      COALESCE(fa.high_finding_count,0) AS high_finding_count,
+      COALESCE(fa.medium_finding_count,0) AS medium_finding_count,
+      COALESCE(fa.open_finding_count,0) AS open_finding_count,
+      LEAST(COALESCE(fa.critical_finding_count,0)*40 + COALESCE(fa.high_finding_count,0)*20 + COALESCE(fa.medium_finding_count,0)*5,100) AS exposure_score,
+      ROUND((
+        (COALESCE(va.max_cvss,0)/10.0*100)*0.35
+        + (CASE WHEN COALESCE(va.has_kev,false) THEN 100 ELSE COALESCE(va.max_epss,0)*100 END)*0.30
+        + LEAST(COALESCE(fa.critical_finding_count,0)*40 + COALESCE(fa.high_finding_count,0)*20 + COALESCE(fa.medium_finding_count,0)*5,100)*0.20
+        + (CASE a.criticality WHEN 'critical' THEN 100 WHEN 'high' THEN 75 WHEN 'low' THEN 25 ELSE 50 END)*0.15
+      )::numeric,1) AS risk_score
+    FROM assets a
+    LEFT JOIN vuln_agg va ON va.asset_id=a.asset_id
+    LEFT JOIN finding_agg fa ON fa.asset_id=a.asset_id
+    WHERE a.status != 'missing'
+  )
+"""
+
+
+def asset_risk_ranking():
+    with connection() as conn:
+        rows = conn.execute(_ASSET_RISK_SCORED_CTE + """
+          SELECT *,
+            CASE WHEN has_kev THEN 'critical'
+                 WHEN risk_score >= 80 THEN 'critical'
+                 WHEN risk_score >= 60 THEN 'high'
+                 WHEN risk_score >= 35 THEN 'medium'
+                 ELSE 'low' END AS risk_band,
+            ROW_NUMBER() OVER (ORDER BY has_kev DESC,risk_score DESC NULLS LAST) AS priority_rank,
+            count(*) OVER () AS priority_total
+          FROM scored
+          ORDER BY has_kev DESC,risk_score DESC NULLS LAST""").fetchall()
+        return [_serialize(row) for row in rows]
+
+
+# Now that Layer 8 exists, the trend uses assets' real current risk score
+# rather than a raw vulnerability count. Same caveat as the vulnerability-count
+# proxy it replaces: this is "based on what we know today, how risky were the
+# assets seen in scan X" — CVSS/EPSS/KEV data isn't versioned per scan, so it
+# is not a true point-in-time snapshot of risk at the moment of that scan.
+def telemetry_trend(limit=10):
+    with connection() as conn:
+        rows = conn.execute(_ASSET_RISK_SCORED_CTE + """
+          SELECT s.id AS scan_id,s.started_at,
+            (SELECT count(*) FROM asset_observations ao WHERE ao.scan_id=s.id) AS device_count,
+            (SELECT count(*) FROM asset_observations ao JOIN observed_services os ON os.observation_id=ao.observation_id
+               WHERE ao.scan_id=s.id AND os.state='open') AS open_port_count,
+            (SELECT ROUND(AVG(risk_score),1) FROM scored WHERE asset_id IN (SELECT asset_id FROM asset_observations ao WHERE ao.scan_id=s.id)) AS avg_risk_score,
+            (SELECT MAX(risk_score) FROM scored WHERE asset_id IN (SELECT asset_id FROM asset_observations ao WHERE ao.scan_id=s.id)) AS max_risk_score
+          FROM scan_sessions s
+          WHERE s.status='COMPLETED'
+          ORDER BY s.started_at DESC
+          LIMIT %s""", (limit,)).fetchall()
+        return [_serialize(row) for row in reversed(rows)]
+
+
+def risk_summary():
+    ranking = asset_risk_ranking()
+    return {
+        "assets_scored": len(ranking),
+        "critical": sum(1 for r in ranking if r["risk_band"] == "critical"),
+        "high": sum(1 for r in ranking if r["risk_band"] == "high"),
+        "medium": sum(1 for r in ranking if r["risk_band"] == "medium"),
+        "low": sum(1 for r in ranking if r["risk_band"] == "low"),
+        "kev_matches": sum(1 for r in ranking if r["has_kev"]),
+        "top_risk_asset": ranking[0] if ranking else None,
+    }

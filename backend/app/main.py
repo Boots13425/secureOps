@@ -188,6 +188,26 @@ def refresh_kev():
     return {"status": "queued"}
 
 
+@app.get("/api/v1/telemetry/changes")
+def telemetry_changes(to_scan_id: str | None = None, from_scan_id: str | None = None):
+    return {"data": repository.telemetry_changes(to_scan_id, from_scan_id)}
+
+
+@app.get("/api/v1/telemetry/trend")
+def telemetry_trend(limit: int = Query(10, ge=2, le=50)):
+    return {"data": repository.telemetry_trend(limit)}
+
+
+@app.get("/api/v1/risk/assets")
+def risk_assets():
+    return {"data": repository.asset_risk_ranking()}
+
+
+@app.get("/api/v1/risk/summary")
+def risk_summary():
+    return {"data": repository.risk_summary()}
+
+
 @app.patch("/api/v1/devices/{asset_id}")
 def patch_device(asset_id: str, payload: AssetUpdate):
     result = repository.update_asset(asset_id, payload.model_dump())

@@ -28,6 +28,10 @@ CREATE TABLE IF NOT EXISTS assets (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+-- Layer 8: nothing in a network scan can tell the system how much an asset
+-- matters to the organization — that has to come from a person. Defaults to
+-- 'normal' so untagged assets don't silently skew the risk ranking.
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS criticality varchar(12) NOT NULL DEFAULT 'normal' CHECK (criticality IN ('low','normal','high','critical'));
 CREATE UNIQUE INDEX IF NOT EXISTS uq_assets_mac ON assets (mac_address) WHERE mac_address IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_assets_ip ON assets (ip_address);
 CREATE INDEX IF NOT EXISTS idx_assets_status_type ON assets (status, device_type);
