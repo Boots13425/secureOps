@@ -136,6 +136,54 @@ export async function refreshEnrichment() {
   return data
 }
 
+export async function getEpssIntelligence(filters = {}) {
+  const params = {}
+  if (filters.status) params.status = filters.status
+  if (filters.query) params.q = filters.query
+  if (filters.scanId) params.scan_id = filters.scanId
+  const { data } = await http.get('/epss/intelligence', { params })
+  return data.data
+}
+
+export async function getEpssSummary() {
+  const { data } = await http.get('/epss/summary')
+  return data.data
+}
+
+export async function getEpssRuns() {
+  const { data } = await http.get('/epss/runs', { params: { limit: 10 } })
+  return data.data
+}
+
+export async function refreshEpss() {
+  const { data } = await http.post('/epss/refresh')
+  return data
+}
+
+export async function getKevIntelligence(filters = {}) {
+  const params = {}
+  if (filters.status) params.status = filters.status
+  if (filters.query) params.q = filters.query
+  if (filters.scanId) params.scan_id = filters.scanId
+  const { data } = await http.get('/kev/intelligence', { params })
+  return data.data
+}
+
+export async function getKevSummary() {
+  const { data } = await http.get('/kev/summary')
+  return data.data
+}
+
+export async function getKevRuns() {
+  const { data } = await http.get('/kev/runs', { params: { limit: 10 } })
+  return data.data
+}
+
+export async function refreshKev() {
+  const { data } = await http.post('/kev/refresh')
+  return data
+}
+
 export async function getScanNetwork() {
   const { data } = await http.get('/scan/network')
   return data.data

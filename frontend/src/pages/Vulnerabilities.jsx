@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { DatabaseZap, ExternalLink, Filter, Flame, RefreshCw, Search } from 'lucide-react'
+import { DatabaseZap, ExternalLink, Filter, RefreshCw, Search } from 'lucide-react'
 import { useEnrichmentRuns, useRefreshEnrichment, useUpdateVulnerabilityStatus, useVulnerabilities } from '../hooks/useVulnerabilities'
 import { useLatestCompletedSession } from '../hooks/useScanSessions'
 import ConfidencePill from '../components/ConfidencePill'
@@ -15,7 +15,6 @@ function summarize(matches) {
   const active = list.filter((m) => m.status === 'active')
   return {
     active_matches: active.length,
-    known_exploited: active.filter((m) => m.kev_flag).length,
     critical: active.filter((m) => (m.cvss_base_severity || '').toUpperCase() === 'CRITICAL').length,
     high: active.filter((m) => (m.cvss_base_severity || '').toUpperCase() === 'HIGH').length,
     high_confidence: active.filter((m) => m.match_confidence === 'high' || m.match_confidence === 'confirmed').length,
@@ -61,9 +60,8 @@ export default function Vulnerabilities() {
         </div>
       </div>
 
-      <div className="grid grid-cols-6 gap-4">
+      <div className="grid grid-cols-5 gap-4">
         <MetricCard label="Active matches" value={summary.active_matches} sub="candidate service links" />
-        <MetricCard label="Known exploited" value={summary.known_exploited} sub="confirmed in CISA KEV" tone="danger" />
         <MetricCard label="Critical CVSS" value={summary.critical} sub="NVD base severity" tone="danger" />
         <MetricCard label="High CVSS" value={summary.high} sub="NVD base severity" tone="danger" />
         <MetricCard label="High confidence" value={summary.high_confidence} sub="exact CPE/version matches" tone="ok" />
@@ -88,14 +86,7 @@ export default function Vulnerabilities() {
             <div className="flex items-start justify-between gap-4">
               <div className="flex gap-4 min-w-0">
                 <div className="w-16 h-16 shrink-0 rounded-[var(--radius-sm)] bg-[var(--bg-surface-2)] border border-[var(--border)] flex flex-col items-center justify-center"><span className="text-[10px] text-[var(--text-muted)]">CVSS</span><span className="text-xl font-semibold text-[var(--text-primary)]">{match.cvss_base_score ?? '—'}</span><span className="text-[9px] text-[var(--text-muted)]">v{match.cvss_version || 'N/A'}</span></div>
-                {match.epss_score != null && (
-                  <div className="w-16 h-16 shrink-0 rounded-[var(--radius-sm)] bg-[var(--bg-surface-2)] border border-[var(--border)] flex flex-col items-center justify-center" title={`EPSS: ${(match.epss_score * 100).toFixed(1)}% chance of exploitation in the next 30 days (${(match.epss_percentile * 100).toFixed(0)}th percentile)`}>
-                    <span className="text-[10px] text-[var(--text-muted)]">EPSS</span>
-                    <span className="text-xl font-semibold text-[var(--text-primary)]">{(match.epss_score * 100).toFixed(0)}%</span>
-                    <span className="text-[9px] text-[var(--text-muted)]">{(match.epss_percentile * 100).toFixed(0)}th pctl</span>
-                  </div>
-                )}
-                <div className="min-w-0"><div className="flex items-center gap-2 flex-wrap mb-1.5"><a href={`https://nvd.nist.gov/vuln/detail/${match.cve_id}`} target="_blank" rel="noreferrer" className="text-base font-semibold text-[var(--accent)] hover:underline inline-flex items-center gap-1">{match.cve_id}<ExternalLink size={13} /></a>{match.kev_flag && <span className="pill pill--danger inline-flex items-center gap-1" title={`Added to CISA KEV ${match.kev_date_added || ''}`}><Flame size={11} />Known Exploited</span>}<SeverityPill severity={(match.cvss_base_severity || 'informational').toLowerCase()} /><ConfidencePill confidence={match.match_confidence === 'confirmed' ? 'high' : match.match_confidence} /></div><div className="text-xs font-medium text-[var(--text-secondary)]">{match.match_wording}</div><div className="text-xs text-[var(--text-muted)] mt-1">{match.hostname || 'Unresolved asset'} · <span className="mono">{match.ip_address}</span> · {match.port}/{match.protocol} · {match.product || match.service_name || 'Unidentified product'} {match.version || ''}</div>{match.kev_flag && match.kev_required_action && <div className="text-xs text-[var(--danger)] mt-1.5 font-medium">CISA required action: {match.kev_required_action}</div>}</div>
+                <div className="min-w-0"><div className="flex items-center gap-2 flex-wrap mb-1.5"><a href={`https://nvd.nist.gov/vuln/detail/${match.cve_id}`} target="_blank" rel="noreferrer" className="text-base font-semibold text-[var(--accent)] hover:underline inline-flex items-center gap-1">{match.cve_id}<ExternalLink size={13} /></a><SeverityPill severity={(match.cvss_base_severity || 'informational').toLowerCase()} /><ConfidencePill confidence={match.match_confidence === 'confirmed' ? 'high' : match.match_confidence} /></div><div className="text-xs font-medium text-[var(--text-secondary)]">{match.match_wording}</div><div className="text-xs text-[var(--text-muted)] mt-1">{match.hostname || 'Unresolved asset'} · <span className="mono">{match.ip_address}</span> · {match.port}/{match.protocol} · {match.product || match.service_name || 'Unidentified product'} {match.version || ''}</div></div>
               </div>
               <select aria-label={`Update status for ${match.cve_id}`} value={match.status} disabled={updateStatus.isPending} onChange={(event) => updateStatus.mutate({ matchId: match.service_vulnerability_id, status: event.target.value })} className="bg-[var(--bg-surface-2)] border border-[var(--border)] rounded-[var(--radius-sm)] px-3 py-2 text-xs text-[var(--text-primary)]"><option value="active">Active</option><option value="dismissed">Dismiss</option><option value="resolved">Resolved</option></select>
             </div>

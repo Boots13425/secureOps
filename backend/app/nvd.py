@@ -224,13 +224,10 @@ class NvdEnrichmentCoordinator:
             with connection() as conn:
                 conn.execute("""UPDATE nvd_enrichment_runs SET status=%s,cpes_queried=%s,cache_hits=%s,cves_matched=%s,error_message=%s,finished_at=now()
                   WHERE enrichment_run_id=%s""", (status,queried,cache_hits,matched,"\n".join(errors)[:4000] or None,job_id))
-            # Layer 5/6: only meaningful once Layer 4 has matched something to
-            # attach a score/flag to, so both run right after — never alone.
-            try:
-                from .epss import refresh_epss
-                refresh_epss()
-            except Exception:
-                pass
+            # Layer 6: only meaningful once Layer 4 has matched something to
+            # attach a flag to, so it runs right after — never on its own.
+            # (Layer 5/EPSS runs on its own independent daily schedule instead
+            # of being chained to a scan — see epss.py's EpssCoordinator.)
             try:
                 from .kev import refresh_kev
                 refresh_kev()

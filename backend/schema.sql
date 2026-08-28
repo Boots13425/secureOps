@@ -183,13 +183,14 @@ CREATE TABLE IF NOT EXISTS vulnerabilities (
 );
 CREATE INDEX IF NOT EXISTS idx_vulnerabilities_cvss ON vulnerabilities (cvss_base_score DESC NULLS LAST);
 
--- Layer 5: FIRST.org EPSS exploitation-probability enrichment, attached to
--- CVEs Layer 4 has already matched. epss_score is 0-1 (30-day exploitation
--- probability); epss_percentile is 0-1 (rank among all scored CVEs).
-ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS epss_score numeric(6,5) CHECK (epss_score BETWEEN 0 AND 1);
-ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS epss_percentile numeric(6,5) CHECK (epss_percentile BETWEEN 0 AND 1);
-ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS epss_date date;
-CREATE INDEX IF NOT EXISTS idx_vulnerabilities_epss ON vulnerabilities (epss_score DESC NULLS LAST);
+-- Layer 5 originally attached EPSS directly to vulnerabilities (epss_score/
+-- epss_percentile/epss_date). Superseded by the dedicated epss_current_scores/
+-- epss_daily_snapshots tables below (daily-scheduled, snapshotted, bulk-loaded
+-- via COPY) — drop the old columns so there's only one source of truth.
+DROP INDEX IF EXISTS idx_vulnerabilities_epss;
+ALTER TABLE vulnerabilities DROP COLUMN IF EXISTS epss_score;
+ALTER TABLE vulnerabilities DROP COLUMN IF EXISTS epss_percentile;
+ALTER TABLE vulnerabilities DROP COLUMN IF EXISTS epss_date;
 
 -- Layer 6: CISA Known Exploited Vulnerabilities. A KEV match is confirmed
 -- real-world exploitation, not a prediction, so it must outrank CVSS/EPSS
@@ -199,6 +200,21 @@ ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS kev_date_added date;
 ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS kev_required_action text;
 ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS kev_due_date date;
 CREATE INDEX IF NOT EXISTS idx_vulnerabilities_kev ON vulnerabilities (kev_flag) WHERE kev_flag;
+
+-- One row per KEV catalog check, same pattern as nvd_enrichment_runs and
+-- epss_download_runs, so the dedicated KEV page can show its own history
+-- and "last checked" time instead of inferring it from unrelated timestamps.
+CREATE TABLE IF NOT EXISTS kev_refresh_runs (
+  kev_run_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  trigger_source varchar(16) NOT NULL CHECK (trigger_source IN ('scan','manual')),
+  status varchar(16) NOT NULL CHECK (status IN ('running','completed','failed')),
+  catalog_entries integer NOT NULL DEFAULT 0,
+  matched_cves integer NOT NULL DEFAULT 0,
+  error_message text,
+  started_at timestamptz NOT NULL DEFAULT now(),
+  finished_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_kev_runs_time ON kev_refresh_runs (started_at DESC);
 
 CREATE TABLE IF NOT EXISTS service_vulnerabilities (
   service_vulnerability_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -217,6 +233,52 @@ CREATE TABLE IF NOT EXISTS service_vulnerabilities (
 );
 CREATE INDEX IF NOT EXISTS idx_service_vulns_posture ON service_vulnerabilities (status, match_confidence, last_seen DESC);
 CREATE INDEX IF NOT EXISTS idx_service_vulns_cve ON service_vulnerabilities (cve_id);
+
+-- Layer 5: FIRST.org EPSS, downloaded once daily on its own schedule rather
+-- than chained to a scan. A snapshot preserves what FIRST published each day;
+-- the current table makes dashboard joins inexpensive without losing history.
+CREATE TABLE IF NOT EXISTS epss_download_runs (
+  epss_run_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  target_date date NOT NULL,
+  trigger_source varchar(16) NOT NULL CHECK (trigger_source IN ('scheduled','retry','manual','startup')),
+  status varchar(16) NOT NULL CHECK (status IN ('queued','running','completed','failed')),
+  source_url text NOT NULL,
+  records_received integer NOT NULL DEFAULT 0,
+  error_message text,
+  queued_at timestamptz NOT NULL DEFAULT now(),
+  started_at timestamptz,
+  finished_at timestamptz,
+  next_retry_at timestamptz
+);
+CREATE INDEX IF NOT EXISTS idx_epss_runs_date ON epss_download_runs (target_date DESC, queued_at DESC);
+
+CREATE TABLE IF NOT EXISTS epss_daily_snapshots (
+  epss_date date NOT NULL,
+  cve_id varchar(24) NOT NULL,
+  epss_score numeric(8,7) NOT NULL CHECK (epss_score >= 0 AND epss_score <= 1),
+  epss_percentile numeric(8,7) NOT NULL CHECK (epss_percentile >= 0 AND epss_percentile <= 1),
+  source_run_id uuid NOT NULL REFERENCES epss_download_runs(epss_run_id) ON DELETE RESTRICT,
+  imported_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (epss_date, cve_id)
+);
+CREATE INDEX IF NOT EXISTS idx_epss_snapshot_cve ON epss_daily_snapshots (cve_id, epss_date DESC);
+
+CREATE TABLE IF NOT EXISTS epss_current_scores (
+  cve_id varchar(24) PRIMARY KEY,
+  epss_score numeric(8,7) NOT NULL CHECK (epss_score >= 0 AND epss_score <= 1),
+  epss_percentile numeric(8,7) NOT NULL CHECK (epss_percentile >= 0 AND epss_percentile <= 1),
+  epss_date date NOT NULL,
+  source_run_id uuid NOT NULL REFERENCES epss_download_runs(epss_run_id) ON DELETE RESTRICT,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_epss_current_score ON epss_current_scores (epss_score DESC);
+
+-- A basic 0-100 prototype prioritization score (CVSS 50%, EPSS 35%, match
+-- confidence 10%, asset context 5%) — a head start toward Layer 8, computed
+-- automatically whenever EPSS scores are refreshed.
+ALTER TABLE service_vulnerabilities ADD COLUMN IF NOT EXISTS organization_risk_score numeric(5,2);
+ALTER TABLE service_vulnerabilities ADD COLUMN IF NOT EXISTS organization_risk_band varchar(12);
+ALTER TABLE service_vulnerabilities ADD COLUMN IF NOT EXISTS risk_calculated_at timestamptz;
 
 -- Preserve and surface fingerprints collected before the persistent Layer 2
 -- inventory was introduced. Their confidence remains low because older rows
