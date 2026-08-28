@@ -268,14 +268,14 @@ def list_vulnerabilities(status=None, severity=None, confidence=None, query=None
       sv.match_reason,sv.applicability_status,sv.status,sv.first_seen,sv.last_seen,sv.last_checked_at,
       sv.organization_risk_score,sv.organization_risk_band,
       v.description,v.published_at,v.modified_at,v.vuln_status,v.cvss_version,v.cvss_base_score,v.cvss_base_severity,v.cvss_vector,v.nvd_last_refreshed_at,
-      e.epss_score,e.epss_percentile,e.epss_date,
+      e.epss_score,e.epss_percentile,e.epss_date,sv.risk_calculated_at,
       v.kev_flag,v.kev_date_added,v.kev_required_action,v.kev_due_date,
       s.asset_id,s.port,s.protocol,s.service_name,s.product,s.version,s.cpe,host(a.ip_address) AS ip_address,a.hostname,a.device_type
       FROM service_vulnerabilities sv JOIN vulnerabilities v ON v.cve_id=sv.cve_id JOIN services s ON s.service_id=sv.service_id
       JOIN assets a ON a.asset_id=s.asset_id
       LEFT JOIN epss_current_scores e ON e.cve_id=v.cve_id
       {where}
-      ORDER BY v.kev_flag DESC, v.cvss_base_score DESC NULLS LAST,sv.match_confidence,sv.last_seen DESC"""
+      ORDER BY v.kev_flag DESC, sv.organization_risk_score DESC NULLS LAST, v.cvss_base_score DESC NULLS LAST,sv.match_confidence,sv.last_seen DESC"""
     with connection() as conn:
         return [_serialize(row) for row in conn.execute(sql, params).fetchall()]
 

@@ -224,6 +224,9 @@ class NvdEnrichmentCoordinator:
             with connection() as conn:
                 conn.execute("""UPDATE nvd_enrichment_runs SET status=%s,cpes_queried=%s,cache_hits=%s,cves_matched=%s,error_message=%s,finished_at=now()
                   WHERE enrichment_run_id=%s""", (status,queried,cache_hits,matched,"\n".join(errors)[:4000] or None,job_id))
+            if matched:
+                from .epss import recalculate_organization_risk
+                recalculate_organization_risk()
             # Layer 6: only meaningful once Layer 4 has matched something to
             # attach a flag to, so it runs right after — never on its own.
             # (Layer 5/EPSS runs on its own independent daily schedule instead
