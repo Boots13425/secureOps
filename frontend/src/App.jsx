@@ -11,6 +11,7 @@ import EpssIntelligence from './pages/EpssIntelligence'
 import KevIntelligence from './pages/KevIntelligence'
 import Telemetry from './pages/Telemetry'
 import RiskEngine from './pages/RiskEngine'
+import SecurityPosture from './pages/SecurityPosture'
 import ScanActivity from './pages/ScanActivity'
 import ScanSessions from './pages/ScanSessions'
 import Placeholder from './pages/Placeholder'
@@ -38,6 +39,7 @@ export default function App() {
               <Route path="/kev" element={<KevIntelligence />} />
               <Route path="/telemetry" element={<Telemetry />} />
               <Route path="/risk" element={<RiskEngine />} />
+              <Route path="/posture" element={<SecurityPosture />} />
               <Route path="/discovery" element={<ScanActivity />} />
               <Route path="/sessions" element={<ScanSessions />} />
               <Route path="/settings" element={<Placeholder title="Settings" />} />
