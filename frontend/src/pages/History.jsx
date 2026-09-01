@@ -1,31 +1,25 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { HardDrive, Filter, Radar } from 'lucide-react'
-import { useCurrentDevices } from '../hooks/useDevices'
+import { History as HistoryIcon, Filter } from 'lucide-react'
+import { useDevices } from '../hooks/useDevices'
 import StatusPill from '../components/StatusPill'
 import OsCell from '../components/OsCell'
 import EmptyState from '../components/EmptyState'
 import { timeAgo } from '../utils/time'
 
-export default function Devices() {
+export default function History() {
   const [status, setStatus] = useState('')
   const [deviceType, setDeviceType] = useState('')
-  const { data: devices, isLoading, latestScan, hasCompletedScan } = useCurrentDevices()
-
-  const filtered = (devices || []).filter((d) => (!status || d.status === status) && (!deviceType || d.device_type === deviceType))
-  const sorted = [...filtered].sort((a, b) => new Date(b.last_seen) - new Date(a.last_seen))
+  const { data: devices, isLoading } = useDevices({ status, deviceType })
+  const sorted = devices ? [...devices].sort((a, b) => new Date(b.last_seen) - new Date(a.last_seen)) : []
 
   return (
     <div className="flex flex-col gap-5">
       <div className="flex items-end justify-between gap-4 flex-wrap">
         <div>
-          <h1 className="text-2xl font-semibold text-[var(--text-primary)]">Devices — right now</h1>
+          <h1 className="text-2xl font-semibold text-[var(--text-primary)]">Historical device log</h1>
           <p className="text-sm text-[var(--text-muted)]">
-            {isLoading
-              ? 'Loading…'
-              : hasCompletedScan
-                ? `${sorted.length} device${sorted.length === 1 ? '' : 's'} found in the last scan (${timeAgo(latestScan?.finished_at)})`
-                : 'No completed scan yet'}
+            {isLoading ? 'Loading…' : `${sorted.length} device${sorted.length === 1 ? '' : 's'} ever observed, across every scan`}
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -41,22 +35,17 @@ export default function Devices() {
         </div>
       </div>
 
-      <div className="text-xs text-[var(--text-muted)]">
-        This only shows devices seen in the most recent scan. For the full permanent record of every device ever seen, see the <Link to="/history" className="text-[var(--accent)] hover:underline">History</Link> page.
+      <div className="text-xs text-[var(--text-muted)] flex items-center gap-1.5">
+        <HistoryIcon size={13} />
+        <span>This is the permanent record — a device stays here forever, even if it hasn't been seen in a while (it's marked "Missing" instead of removed). For only what's on the network right now, see the Devices page.</span>
       </div>
 
       <div className="card">
-        {!isLoading && !hasCompletedScan ? (
+        {!isLoading && sorted.length === 0 ? (
           <EmptyState
-            icon={Radar}
-            title="No completed scan yet"
-            description="Start a network scan from the Discovery page to see what's on the network right now."
-          />
-        ) : !isLoading && sorted.length === 0 ? (
-          <EmptyState
-            icon={HardDrive}
-            title="No devices matched the last scan"
-            description="Try clearing the filters above, or run a new scan."
+            icon={HistoryIcon}
+            title="No devices recorded yet"
+            description="Run a network scan to start building the historical log."
           />
         ) : (
           <table className="w-full text-sm">

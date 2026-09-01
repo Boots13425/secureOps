@@ -328,7 +328,22 @@ def parse_exposure_check_xml(path: Path, host: HostObservation) -> None:
                 check_id=check_id, port=port, protocol=protocol, status="completed",
                 output=script.get("output"), structured_output=_xml_element_data(script),
             ))
+    # smb-protocols is a hostrule script — Nmap attaches its output under
+    # <hostscript>, not any <port>, because SMB dialect negotiation isn't tied
+    # to one port. Without this, the check always falls through to "no_result"
+    # below and findings.py never evaluates its output (it skips non-completed
+    # checks), so SMBv1 would silently never be detected on a live scan.
     expected = _approved_checks_for(host)
+    for script in root.findall("host/hostscript/script"):
+        check_id = script.get("id")
+        if check_id not in APPROVED_EXPOSURE_SCRIPTS:
+            continue
+        for port in expected.get(check_id, set()):
+            returned.add((check_id, port))
+            host.exposure_checks.append(ExposureCheckObservation(
+                check_id=check_id, port=port, protocol="tcp", status="completed",
+                output=script.get("output"), structured_output=_xml_element_data(script),
+            ))
     for check_id, ports in expected.items():
         for port in ports:
             if (check_id, port) not in returned:

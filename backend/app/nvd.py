@@ -1,4 +1,5 @@
 import json
+import ssl
 import threading
 import time
 import urllib.error
@@ -6,6 +7,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
 
+import certifi
 from psycopg.types.json import Jsonb
 
 from .config import settings
@@ -14,6 +16,13 @@ from .database import connection
 
 NVD_CVE_API = "https://services.nvd.nist.gov/rest/json/cves/2.0"
 CVSS_PRIORITY = ("cvssMetricV40", "cvssMetricV31", "cvssMetricV30", "cvssMetricV2")
+
+# The OS/Python default trust store is frequently stale (especially on Windows
+# python.org builds), which surfaces as a false "certificate has expired" error
+# even when the real certificate chain is valid. certifi ships a maintained,
+# up-to-date CA bundle independent of the OS store, so pin outbound HTTPS
+# requests to it rather than trusting whatever the platform bundles.
+_SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
 
 
 def _split_cpe(value: str) -> list[str]:
@@ -104,7 +113,7 @@ class NvdClient:
             if settings.nvd_api_key: headers["apiKey"] = settings.nvd_api_key
             request = urllib.request.Request(url, headers=headers)
             try:
-                with urllib.request.urlopen(request, timeout=settings.nvd_request_timeout_seconds) as response:
+                with urllib.request.urlopen(request, timeout=settings.nvd_request_timeout_seconds, context=_SSL_CONTEXT) as response:
                     payload = json.loads(response.read().decode("utf-8"))
             finally:
                 self._last_request = time.monotonic()

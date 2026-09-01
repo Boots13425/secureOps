@@ -1,8 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { getFindings, getFindingsSummary, updateFindingStatus } from '../api/client'
+import { getDeviceFindings, getFindings, getFindingsSummary, updateFindingStatus } from '../api/client'
 
 export function useFindings(filters = {}) {
   return useQuery({ queryKey: ['findings', filters], queryFn: () => getFindings(filters) })
+}
+
+export function useDeviceFindings(assetId) {
+  return useQuery({ queryKey: ['device-findings', assetId], queryFn: () => getDeviceFindings(assetId), enabled: Boolean(assetId) })
 }
 
 export function useFindingsSummary() {

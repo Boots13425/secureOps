@@ -11,6 +11,16 @@ export function useScanNetwork() {
   return useQuery({ queryKey: ['scan-network'], queryFn: getScanNetwork, refetchInterval: 10_000 })
 }
 
+// Shared by any "what's happening right now" view (Devices, Dashboard activity)
+// so they all agree on which scan counts as "the current one".
+export function useLatestCompletedSession() {
+  const sessions = useQuery({ queryKey: ['scan-sessions'], queryFn: getScanSessions })
+  return {
+    session: sessions.data?.find((s) => s.status === 'COMPLETED'),
+    isLoading: sessions.isLoading,
+  }
+}
+
 function useSessionMutation(mutationFn) {
   const queryClient = useQueryClient()
   return useMutation({
