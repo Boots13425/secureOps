@@ -1,7 +1,8 @@
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, ServerCog, ShieldAlert } from 'lucide-react'
+import { ArrowLeft, ServerCog, ShieldAlert, BrainCircuit, Flame } from 'lucide-react'
 import { useDevice, useDeviceServices } from '../hooks/useDevices'
 import { useDeviceFindings } from '../hooks/useFindings'
+import { useRiskAssets } from '../hooks/useRisk'
 import StatusPill from '../components/StatusPill'
 import ConfidencePill from '../components/ConfidencePill'
 import SeverityPill from '../components/SeverityPill'
@@ -9,6 +10,8 @@ import OsCell from '../components/OsCell'
 import EmptyState from '../components/EmptyState'
 import MetricCard from '../components/MetricCard'
 import { timeAgo } from '../utils/time'
+
+const BAND_TONE = { critical: 'pill--danger', high: 'pill--danger', elevated: 'pill--warn', moderate: 'pill--warn', low: 'pill--ok' }
 
 function EnrichmentPill({ service }) {
   if (service.enrichment_status === 'enriched') return <span className="pill pill--ok">Enriched</span>
@@ -21,7 +24,9 @@ export default function AssetDetail() {
   const { data: device, isLoading: deviceLoading, isError } = useDevice(assetId)
   const { data: services, isLoading: servicesLoading } = useDeviceServices(assetId)
   const { data: findings, isLoading: findingsLoading } = useDeviceFindings(assetId)
+  const { data: riskAssets } = useRiskAssets()
   const openFindings = (findings || []).filter((f) => f.status === 'open')
+  const risk = (riskAssets || []).find((r) => r.asset_id === assetId)
 
   if (isError) {
     return (
@@ -92,6 +97,45 @@ export default function AssetDetail() {
             <MetricCard label="CPE ready" value={cpeReady} sub="eligible for CVE intelligence" />
             <MetricCard label="Open findings" value={openFindings.length} sub="security exposure checks" tone={openFindings.length ? 'danger' : 'neutral'} />
           </div>
+
+          {risk && (
+            <div>
+              <h2 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Security posture — ETSNTECH prototype prioritization index</h2>
+              <div className="card flex flex-col gap-4">
+                <div className="flex items-center gap-4 flex-wrap">
+                  <div className="flex items-center gap-2">
+                    <BrainCircuit size={18} className="text-[var(--accent)]" />
+                    <span className="text-2xl font-semibold text-[var(--text-primary)]">{risk.risk_score}</span>
+                    <span className="text-xs text-[var(--text-muted)]">/ 100</span>
+                  </div>
+                  <span className={`pill ${BAND_TONE[risk.risk_band] || 'pill--info'}`}>{risk.risk_band}</span>
+                  <span className="pill pill--info">Priority #{risk.priority_rank} of {risk.priority_total}</span>
+                  {risk.has_kev && <span className="pill pill--danger inline-flex items-center gap-1"><Flame size={11} />Known Exploited</span>}
+                </div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">Highest CVSS</div>
+                    <div className="text-[var(--text-primary)]">{risk.max_cvss || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">Highest EPSS</div>
+                    <div className="text-[var(--text-primary)]">{risk.max_epss ? `${Math.round(risk.max_epss * 100)}%` : '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">Active CVEs</div>
+                    <div className="text-[var(--text-primary)]">{risk.active_vuln_count}</div>
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wide text-[var(--text-muted)] mb-1">KEV matches</div>
+                    <div className="text-[var(--text-primary)]">{risk.has_kev ? 'Yes' : 'None'}</div>
+                  </div>
+                </div>
+                <div className="pt-3 border-t border-[var(--border)] text-xs text-[var(--text-secondary)]">
+                  <span className="font-medium text-[var(--text-primary)]">Recommendation: </span>{risk.recommended_action}
+                </div>
+              </div>
+            </div>
+          )}
 
           <div>
             <h2 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Security findings</h2>

@@ -32,6 +32,29 @@ CREATE TABLE IF NOT EXISTS assets (
 -- matters to the organization — that has to come from a person. Defaults to
 -- 'normal' so untagged assets don't silently skew the risk ranking.
 ALTER TABLE assets ADD COLUMN IF NOT EXISTS criticality varchar(12) NOT NULL DEFAULT 'normal' CHECK (criticality IN ('low','normal','high','critical'));
+
+-- Layer 8 realignment: the project guide's EARI formula (§12.1-12.4) scores
+-- "asset criticality" and "network exposure" as two independent categorical
+-- inputs, each with its own 6-value table and 0-100 mapping — not the earlier
+-- ad hoc low/normal/high/critical scale, and not derived from open findings.
+-- Widen the column first since the new category names are longer than varchar(12).
+ALTER TABLE assets DROP CONSTRAINT IF EXISTS assets_criticality_check;
+ALTER TABLE assets ALTER COLUMN criticality TYPE varchar(24);
+UPDATE assets SET criticality = CASE criticality
+  WHEN 'low' THEN 'test_temporary' WHEN 'normal' THEN 'standard_workstation'
+  WHEN 'high' THEN 'privileged_workstation' WHEN 'critical' THEN 'critical_service'
+  ELSE criticality END;
+ALTER TABLE assets ALTER COLUMN criticality SET DEFAULT 'standard_workstation';
+ALTER TABLE assets ADD CONSTRAINT assets_criticality_check CHECK (criticality IN
+  ('test_temporary','peripheral','standard_workstation','privileged_workstation','business_server','critical_service'));
+
+-- Network exposure context (isolated lab vs. internet-facing, etc.) is the
+-- other organizational input the EARI formula needs and nothing in a scan
+-- can infer it either, so it is a person-set field just like criticality.
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS exposure varchar(24) NOT NULL DEFAULT 'staff_network';
+ALTER TABLE assets DROP CONSTRAINT IF EXISTS assets_exposure_check;
+ALTER TABLE assets ADD CONSTRAINT assets_exposure_check CHECK (exposure IN
+  ('isolated_lab','management_segment','server_vlan','staff_network','guest_network','internet_facing'));
 CREATE UNIQUE INDEX IF NOT EXISTS uq_assets_mac ON assets (mac_address) WHERE mac_address IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_assets_ip ON assets (ip_address);
 CREATE INDEX IF NOT EXISTS idx_assets_status_type ON assets (status, device_type);
@@ -310,3 +333,23 @@ CREATE TABLE IF NOT EXISTS scan_activity (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_scan_activity_time ON scan_activity (created_at DESC);
+
+-- Layer 7 needs a RISK_CHANGED event type (project guide §11), but the EARI
+-- score (Layer 8) is always computed live from current CVSS/EPSS/KEV/finding
+-- state — nothing stores what an asset's score was "as of" a past scan, so
+-- there is nothing to diff. This snapshot is that missing history: one row
+-- per asset captured right after a scan's NVD/KEV enrichment pipeline
+-- finishes (see nvd.py's NvdEnrichmentCoordinator), so telemetry_changes()
+-- can compare two real points in time instead of comparing "now" to "now".
+-- Note EPSS refreshes on its own independent daily schedule (Layer 5) and
+-- is not re-snapshotted when it changes a score outside of a scan.
+CREATE TABLE IF NOT EXISTS asset_risk_snapshots (
+  snapshot_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scan_id uuid NOT NULL REFERENCES scan_sessions(id) ON DELETE CASCADE,
+  asset_id uuid NOT NULL REFERENCES assets(asset_id) ON DELETE CASCADE,
+  risk_score numeric(5,2) NOT NULL,
+  risk_band varchar(12) NOT NULL,
+  captured_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (scan_id, asset_id)
+);
+CREATE INDEX IF NOT EXISTS idx_risk_snapshots_asset_time ON asset_risk_snapshots (asset_id, captured_at DESC);

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { GitCompare, PlusCircle, MinusCircle, ArrowUpRight, ArrowDownRight, RefreshCw, Settings2, ShieldAlert, ShieldCheck, History as HistoryIcon } from 'lucide-react'
+import { GitCompare, PlusCircle, MinusCircle, ArrowUpRight, ArrowDownRight, RefreshCw, Settings2, ShieldAlert, ShieldCheck, History as HistoryIcon, Bug, CheckCircle2, TrendingUp, TrendingDown } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import EmptyState from '../components/EmptyState'
 import MetricCard from '../components/MetricCard'
@@ -98,12 +98,16 @@ export default function Telemetry() {
             <span>Comparing scan from {timeAgo(changes.from_scan.started_at)} to scan from {timeAgo(changes.to_scan.started_at)}</span>
           </div>
 
-          <div className="grid grid-cols-5 gap-4">
+          <div className="grid grid-cols-4 gap-4">
             <MetricCard label="New devices" value={changes.new_devices.length} sub="appeared since baseline" tone={changes.new_devices.length ? 'warn' : 'ok'} />
             <MetricCard label="Missing devices" value={changes.missing_devices.length} sub="not seen in compare scan" tone={changes.missing_devices.length ? 'warn' : 'ok'} />
             <MetricCard label="Port changes" value={changes.port_changes.length} sub="opened, closed, or updated" tone={changes.port_changes.length ? 'warn' : 'ok'} />
             <MetricCard label="Config changes" value={changes.config_changes.length} sub="OS, vendor, MAC, hostname" tone={changes.config_changes.length ? 'warn' : 'ok'} />
+          </div>
+          <div className="grid grid-cols-3 gap-4">
             <MetricCard label="Finding changes" value={changes.finding_changes.length} sub="security findings appeared/resolved" tone={changes.finding_changes.length ? 'warn' : 'ok'} />
+            <MetricCard label="CVE changes" value={changes.cve_changes.length} sub="vulnerability matches appeared/resolved" tone={changes.cve_changes.length ? 'warn' : 'ok'} />
+            <MetricCard label="Risk changes" value={changes.risk_changes.length} sub="asset risk band moved" tone={changes.risk_changes.length ? 'warn' : 'ok'} />
           </div>
 
           <div className="grid grid-cols-3 gap-4">
@@ -169,6 +173,33 @@ export default function Telemetry() {
                     <SeverityPill severity={f.severity} />
                   </span>
                   <span className="text-[var(--text-muted)] text-right shrink-0">{f.hostname || f.ip_address} · {f.change}</span>
+                </div>
+              )}
+            />
+            <ChangeGroup
+              icon={Bug} title="CVE changes" tone="text-[var(--warn)]"
+              items={changes.cve_changes} emptyLabel="No vulnerability matches appeared or got resolved between these scans."
+              renderItem={(c) => (
+                <div key={`${c.service_vulnerability_id}-${c.change}`} className="flex items-center justify-between text-xs border-b border-[var(--border)] last:border-0 pb-2 last:pb-0 gap-2">
+                  <span className="flex items-center gap-1.5 min-w-0">
+                    {c.change === 'new' ? <Bug size={12} className="text-[var(--warn)] shrink-0" /> : <CheckCircle2 size={12} className="text-[var(--ok)] shrink-0" />}
+                    <span className="mono text-[var(--text-primary)] truncate">{c.cve_id}</span>
+                    <SeverityPill severity={(c.cvss_base_severity || '').toLowerCase()} />
+                  </span>
+                  <span className="text-[var(--text-muted)] text-right shrink-0">{c.hostname || c.ip_address} · {c.change}</span>
+                </div>
+              )}
+            />
+            <ChangeGroup
+              icon={TrendingUp} title="Risk changes" tone="text-[var(--danger)]"
+              items={changes.risk_changes} emptyLabel="No asset's risk band moved between these scans."
+              renderItem={(r) => (
+                <div key={r.asset_id} className="flex items-center justify-between text-xs border-b border-[var(--border)] last:border-0 pb-2 last:pb-0 gap-2">
+                  <span className="flex items-center gap-1.5 min-w-0">
+                    {r.new_score > r.old_score ? <TrendingUp size={12} className="text-[var(--danger)] shrink-0" /> : <TrendingDown size={12} className="text-[var(--ok)] shrink-0" />}
+                    <span className="text-[var(--text-primary)] truncate">{r.hostname || r.ip_address}</span>
+                  </span>
+                  <span className="text-[var(--text-muted)] text-right shrink-0">{r.old_band} ({r.old_score}) → {r.new_band} ({r.new_score})</span>
                 </div>
               )}
             />

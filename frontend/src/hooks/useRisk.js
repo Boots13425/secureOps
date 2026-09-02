@@ -20,3 +20,15 @@ export function useUpdateCriticality() {
     },
   })
 }
+
+export function useUpdateExposure() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ assetId, exposure }) => patchDevice(assetId, { exposure }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['risk-assets'] })
+      queryClient.invalidateQueries({ queryKey: ['risk-summary'] })
+      queryClient.invalidateQueries({ queryKey: ['devices'] })
+    },
+  })
+}

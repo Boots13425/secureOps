@@ -191,11 +191,11 @@ class NvdEnrichmentCoordinator:
                 rows = conn.execute("SELECT service_id,cpe,confidence FROM services WHERE cpe IS NOT NULL AND state='open'").fetchall()
             unique_cpes = {row["cpe"] for row in rows}
             job = conn.execute("INSERT INTO nvd_enrichment_runs(scan_id,trigger_source,status,cpes_queued) VALUES (%s,%s,'queued',%s) RETURNING enrichment_run_id", (scan_id,trigger_source,len(unique_cpes))).fetchone()
-        thread = threading.Thread(target=self._run, args=(str(job["enrichment_run_id"]), rows), daemon=True, name=f"nvd-{job['enrichment_run_id']}")
+        thread = threading.Thread(target=self._run, args=(str(job["enrichment_run_id"]), rows, scan_id), daemon=True, name=f"nvd-{job['enrichment_run_id']}")
         thread.start()
         return str(job["enrichment_run_id"])
 
-    def _run(self, job_id, rows):
+    def _run(self, job_id, rows, scan_id=None):
         with self._worker_lock:
             queried = cache_hits = matched = 0
             errors = []
@@ -236,6 +236,17 @@ class NvdEnrichmentCoordinator:
                 refresh_kev()
             except Exception:
                 pass
+            # Layer 7's RISK_CHANGED needs a real historical snapshot to diff
+            # against (see asset_risk_snapshots in schema.sql) — take one now
+            # that severity/KEV data for this scan is as current as it'll get.
+            # scan_id is None for manual "refresh enrichment" runs, which
+            # aren't tied to a specific scan, so there's nothing to tag.
+            if scan_id is not None:
+                try:
+                    from . import repository
+                    repository.snapshot_asset_risk(scan_id)
+                except Exception:
+                    pass
 
 
 coordinator = NvdEnrichmentCoordinator()
