@@ -1,5 +1,7 @@
+import { useState } from 'react'
 import { BrainCircuit, Flame } from 'lucide-react'
 import EmptyState from '../components/EmptyState'
+import { API_BASE_URL } from '../api/client'
 import MetricCard from '../components/MetricCard'
 import { useRiskAssets, useRiskSummary, useUpdateCriticality } from '../hooks/useRisk'
 
@@ -22,9 +24,32 @@ function ScoreBar({ label, value, max = 100 }) {
 }
 
 export default function RiskEngine() {
-  const { data: assets, isLoading } = useRiskAssets()
-  const { data: summary } = useRiskSummary()
+  const { data: assets, isLoading, refetch: refetchAssets } = useRiskAssets()
+  const { data: summary, refetch: refetchSummary } = useRiskSummary()
   const updateCriticality = useUpdateCriticality()
+
+  const [uploadStatus, setUploadStatus] = useState(null)
+
+  async function handlePolicyUpload(event) {
+    const file = event.target.files[0]
+    if (!file) return
+    setUploadStatus('Uploading...')
+    const formData = new FormData()
+    formData.append('file', file)
+    try {
+      const res = await fetch(`${API_BASE_URL}/assets/policy/upload`, {
+        method: 'POST',
+        body: formData,
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || 'The policy upload failed.')
+      await Promise.all([refetchAssets(), refetchSummary()])
+      setUploadStatus(`Updated ${data.updated} device(s).${data.not_found.length ? ` Not found: ${data.not_found.join(', ')}` : ''}`)
+    } catch (err) {
+      setUploadStatus(`Upload failed: ${err.message}`)
+    }
+    event.target.value = ''
+  }
 
   return (
     <div className="flex flex-col gap-5">
@@ -38,6 +63,22 @@ export default function RiskEngine() {
           <BrainCircuit size={19} className="text-[var(--accent)] shrink-0 mt-0.5" />
           <div>
             <div className="text-sm font-semibold text-[var(--text-primary)]">How this score is built</div>
+
+        <div className="card border-[var(--border)] bg-[var(--bg-surface)] p-4">
+          <div className="text-sm font-semibold text-[var(--text-primary)] mb-1">Upload asset criticality policy</div>
+          <p className="text-xs text-[var(--text-secondary)] mb-3">
+            CSV with columns: device_identifier, criticality (low, normal, high, critical)
+          </p>
+          <input
+            type="file"
+            accept=".csv"
+            onChange={handlePolicyUpload}
+            className="text-xs text-[var(--text-secondary)]"
+          />
+          {uploadStatus && (
+            <p className="text-xs mt-2 text-[var(--text-primary)]">{uploadStatus}</p>
+          )}
+        </div>
             <p className="text-xs text-[var(--text-secondary)] leading-relaxed mt-1">
               Each asset gets a 0-100 score: <strong>severity</strong> (max CVSS of its active CVEs, 35%) + <strong>likelihood</strong> (EPSS
               exploitation probability, 30%) + <strong>exposure</strong> (open security findings on it, weighted — critical findings count

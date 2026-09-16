@@ -3,7 +3,7 @@ import json
 import threading
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import repository
@@ -16,7 +16,8 @@ from .schemas import AssetUpdate, FindingUpdate, ScanStart, VulnerabilityMatchUp
 from .nvd import coordinator as nvd_coordinator
 from .epss import coordinator as epss_coordinator, recalculate_organization_risk
 from .kev import refresh_kev as run_kev_refresh
-
+import csv
+import io
 
 class EventHub:
     def __init__(self): self.clients: set[WebSocket] = set(); self.loop = None
@@ -215,6 +216,40 @@ def patch_device(asset_id: str, payload: AssetUpdate):
     recalculate_organization_risk()
     hub.publish("ASSET_UPDATED", result)
     return {"data": result}
+
+@app.post("/api/v1/assets/policy/upload")
+async def upload_asset_policy(file: UploadFile = File(...)):
+    content = await file.read()
+    try:
+        reader = csv.DictReader(io.StringIO(content.decode("utf-8-sig")))
+    except UnicodeDecodeError as exc:
+        raise HTTPException(400, "Policy file must be a UTF-8 CSV") from exc
+
+    required = {"device_identifier", "criticality"}
+    headers = {header.strip().lower() for header in (reader.fieldnames or []) if header}
+    if not required.issubset(headers):
+        raise HTTPException(400, "CSV must contain device_identifier and criticality columns")
+
+    updated = 0
+    not_found = []
+
+    for row in reader:
+        normalized_row = {str(key).strip().lower(): value for key, value in row.items() if key}
+        identifier = (normalized_row.get("device_identifier") or "").strip()
+        criticality = (normalized_row.get("criticality") or "").strip().lower()
+
+        if not identifier or criticality not in ("low", "normal", "high", "critical"):
+            continue
+
+        asset = repository.find_asset_by_identifier(identifier)
+        if not asset:
+            not_found.append(identifier)
+            continue
+
+        repository.update_asset(asset["asset_id"], {"criticality": criticality})
+        updated += 1
+
+    return {"updated": updated, "not_found": not_found}
 
 
 @app.get("/api/v1/scan/activity")

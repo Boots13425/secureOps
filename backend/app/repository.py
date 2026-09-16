@@ -35,6 +35,13 @@ def list_assets(status=None, device_type=None, scan_id=None):
     """
     with connection() as conn: return [_serialize(row) for row in conn.execute(sql, params).fetchall()]
 
+def find_asset_by_identifier(identifier):
+  identifier = identifier.strip().lower()
+  for asset in list_assets():
+    values = ((asset.get(field) or "").lower() for field in ("hostname", "ip_address", "mac_address"))
+    if identifier in values:
+      return asset
+  return None
 
 def update_asset(asset_id, values):
     allowed = {key: value for key, value in values.items() if value is not None and key in {"status", "device_type", "criticality"}}
