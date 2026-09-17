@@ -1,0 +1,1 @@
+"""SecureOps asset discovery backend."""
