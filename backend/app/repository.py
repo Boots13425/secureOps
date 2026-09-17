@@ -36,6 +36,16 @@ def list_assets(status=None, device_type=None, scan_id=None):
     with connection() as conn: return [_serialize(row) for row in conn.execute(sql, params).fetchall()]
 
 
+def find_asset_by_identifier(identifier):
+    identifier = identifier.strip().lower()
+    sql = """
+      SELECT asset_id AS id, asset_id FROM assets
+      WHERE lower(hostname) = %s OR lower(host(ip_address)) = %s OR lower(mac_address::text) = %s
+      LIMIT 1
+    """
+    with connection() as conn: return _serialize(conn.execute(sql, (identifier, identifier, identifier)).fetchone())
+
+
 def update_asset(asset_id, values):
     allowed = {key: value for key, value in values.items() if value is not None and key in {"status", "device_type", "criticality", "exposure"}}
     if not allowed: return None

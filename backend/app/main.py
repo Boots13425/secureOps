@@ -1,9 +1,12 @@
 import asyncio
+import csv
+import io
 import json
 import threading
 from contextlib import asynccontextmanager
+from typing import get_args
 
-from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import repository
@@ -12,10 +15,12 @@ from .database import connection, initialize_schema
 from .scan_service import ScanCoordinator
 from .scanner import validate_authorized_subnet
 from .network import connected_ipv4_networks
-from .schemas import AssetUpdate, FindingUpdate, ScanStart, VulnerabilityMatchUpdate
+from .schemas import AssetCriticality, AssetUpdate, FindingUpdate, ScanStart, VulnerabilityMatchUpdate
 from .nvd import coordinator as nvd_coordinator
 from .epss import coordinator as epss_coordinator, recalculate_organization_risk
 from .kev import refresh_kev as run_kev_refresh
+
+ASSET_CRITICALITY_VALUES = set(get_args(AssetCriticality))
 
 
 class EventHub:
@@ -215,6 +220,38 @@ def patch_device(asset_id: str, payload: AssetUpdate):
     recalculate_organization_risk()
     hub.publish("ASSET_UPDATED", result)
     return {"data": result}
+
+
+@app.post("/api/v1/assets/criticality/upload")
+async def upload_asset_criticality(file: UploadFile = File(...)):
+    content = await file.read()
+    try:
+        text = content.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise HTTPException(400, "Policy file must be a UTF-8 CSV") from exc
+
+    reader = csv.DictReader(io.StringIO(text))
+    headers = {(header or "").strip().lower() for header in (reader.fieldnames or [])}
+    if not {"device_identifier", "criticality"}.issubset(headers):
+        raise HTTPException(400, "CSV must contain device_identifier and criticality columns")
+
+    updated, not_found, invalid = [], [], []
+    for row in reader:
+        normalized = {(key or "").strip().lower(): (value or "").strip() for key, value in row.items() if key}
+        identifier = normalized.get("device_identifier", "")
+        criticality = normalized.get("criticality", "").lower()
+        if not identifier: continue
+        if criticality not in ASSET_CRITICALITY_VALUES:
+            invalid.append(identifier); continue
+        asset = repository.find_asset_by_identifier(identifier)
+        if not asset:
+            not_found.append(identifier); continue
+        result = repository.update_asset(asset["asset_id"], {"criticality": criticality})
+        hub.publish("ASSET_UPDATED", result)
+        updated.append(identifier)
+
+    if updated: recalculate_organization_risk()
+    return {"updated": len(updated), "not_found": not_found, "invalid_criticality": invalid}
 
 
 @app.get("/api/v1/scan/activity")

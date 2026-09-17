@@ -1,7 +1,8 @@
-import { BrainCircuit, Flame, Wrench } from 'lucide-react'
+import { useState } from 'react'
+import { BrainCircuit, Flame, UploadCloud } from 'lucide-react'
 import EmptyState from '../components/EmptyState'
 import MetricCard from '../components/MetricCard'
-import { useRiskAssets, useRiskSummary, useUpdateCriticality, useUpdateExposure } from '../hooks/useRisk'
+import { useRiskAssets, useRiskSummary, useUpdateCriticality, useUpdateExposure, useUploadAssetCriticality } from '../hooks/useRisk'
 
 const BAND_TONE = { critical: 'pill--danger', high: 'pill--danger', elevated: 'pill--warn', moderate: 'pill--warn', low: 'pill--ok' }
 
@@ -45,6 +46,21 @@ export default function RiskEngine() {
   const { data: summary } = useRiskSummary()
   const updateCriticality = useUpdateCriticality()
   const updateExposure = useUpdateExposure()
+  const uploadCriticality = useUploadAssetCriticality()
+  const [uploadResult, setUploadResult] = useState(null)
+
+  async function handleCriticalityUpload(event) {
+    const file = event.target.files[0]
+    event.target.value = ''
+    if (!file) return
+    setUploadResult(null)
+    try {
+      const result = await uploadCriticality.mutateAsync(file)
+      setUploadResult({ ok: true, ...result })
+    } catch (err) {
+      setUploadResult({ ok: false, message: err.response?.data?.detail || err.message })
+    }
+  }
 
   return (
     <div className="flex flex-col gap-5">
@@ -75,16 +91,30 @@ export default function RiskEngine() {
 
       <div className="card">
         <div className="flex gap-3">
-          <Wrench size={18} className="text-[var(--text-muted)] shrink-0 mt-0.5" />
-          <div>
-            <div className="text-sm font-semibold text-[var(--text-primary)]">What was fixed here</div>
+          <UploadCloud size={19} className="text-[var(--accent)] shrink-0 mt-0.5" />
+          <div className="flex-1">
+            <div className="text-sm font-semibold text-[var(--text-primary)]">Bulk asset criticality upload</div>
             <p className="text-xs text-[var(--text-secondary)] leading-relaxed mt-1">
-              <strong>Problem:</strong> this page's score used to mix "already exploited" and "likely to be exploited soon" into one
-              number, faked the network-exposure input using an unrelated count of open findings, and used a generic low/medium/high
-              scale instead of the guide's specific device categories. <strong>Fix:</strong> the five scoring inputs are now separated and
-              weighted exactly as the project guide specifies, network exposure and criticality are now real settings you choose below,
-              and a confirmed KEV match always enforces a minimum score of 80.
+              Upload a CSV to set criticality for many assets at once instead of one dropdown at a time — e.g. to apply an
+              organizational asset classification policy. Columns: <code className="mono">device_identifier</code> (hostname, IP, or
+              MAC) and <code className="mono">criticality</code>, one of: {CRITICALITY_OPTIONS.map((o) => o.value).join(', ')}.
             </p>
+            <div className="flex items-center gap-3 mt-3">
+              <label className="pill pill--info cursor-pointer">
+                {uploadCriticality.isPending ? 'Uploading…' : 'Choose CSV file'}
+                <input type="file" accept=".csv" className="hidden" onChange={handleCriticalityUpload} disabled={uploadCriticality.isPending} />
+              </label>
+              {uploadResult && uploadResult.ok && (
+                <span className="text-xs text-[var(--text-secondary)]">
+                  Updated {uploadResult.updated} asset{uploadResult.updated === 1 ? '' : 's'}.
+                  {uploadResult.not_found?.length > 0 && ` Not found: ${uploadResult.not_found.join(', ')}.`}
+                  {uploadResult.invalid_criticality?.length > 0 && ` Invalid criticality for: ${uploadResult.invalid_criticality.join(', ')}.`}
+                </span>
+              )}
+              {uploadResult && !uploadResult.ok && (
+                <span className="text-xs text-[var(--danger-text)]">Upload failed: {uploadResult.message}</span>
+              )}
+            </div>
           </div>
         </div>
       </div>

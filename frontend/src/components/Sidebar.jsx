@@ -34,9 +34,9 @@ const navItems = [
   // Layer 3 — Exposure findings
   { to: '/findings', label: 'Exposure Findings', icon: ShieldAlert },
   // Layer 4 — CVE intelligence
-  { to: '/vulnerabilities', label: 'CVE Intelligence', icon: DatabaseZap },
+  { to: '/vulnerabilities', label: 'Severity', icon: DatabaseZap },
   // Layer 5 — EPSS probability
-  { to: '/epss', label: 'EPSS Probability', icon: TrendingUp },
+  { to: '/epss', label: 'Attack Likelihood', icon: TrendingUp },
   // Layer 6 — CISA KEV
   { to: '/kev', label: 'Known Exploited', icon: Flame },
   // Layer 7 — Change telemetry

@@ -212,6 +212,15 @@ export async function getRiskSummary() {
   return data.data
 }
 
+export async function uploadAssetCriticality(file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  const { data } = await http.post('/assets/criticality/upload', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return data
+}
+
 export async function getScanNetwork() {
   const { data } = await http.get('/scan/network')
   return data.data
