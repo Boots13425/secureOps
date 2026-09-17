@@ -78,6 +78,9 @@ def store_scan_results(session_id, subnet, hosts: list[HostObservation], record_
             existing = None
             if host.mac_address:
                 existing = conn.execute("SELECT * FROM assets WHERE mac_address=%s", (host.mac_address,)).fetchone()
+            if not existing and host.hostname:
+                # Project guide §4 step 3: MAC first, then stable hostname, then IP as a last resort.
+                existing = conn.execute("SELECT * FROM assets WHERE hostname=%s AND mac_address IS NULL", (host.hostname,)).fetchone()
             if not existing:
                 existing = conn.execute("SELECT * FROM assets WHERE ip_address=%s AND mac_address IS NULL", (host.ip_address,)).fetchone()
             if existing:
@@ -351,7 +354,7 @@ def list_kev_intelligence(status="active", query=None, scan_id=None):
     where = f"WHERE {' AND '.join(clauses)}"
     sql = f"""SELECT sv.service_vulnerability_id,sv.status,sv.match_confidence,sv.match_wording,
       v.cve_id,v.description,v.cvss_base_score,v.cvss_base_severity,
-      v.kev_date_added,v.kev_required_action,v.kev_due_date,
+      v.kev_date_added,v.kev_required_action,v.kev_due_date,v.kev_known_ransomware_use,
       s.asset_id,s.port,s.protocol,s.service_name,s.product,s.version,
       host(a.ip_address) AS ip_address,a.hostname,a.device_type,a.status AS asset_status
       FROM service_vulnerabilities sv
@@ -592,11 +595,17 @@ _ASSET_RISK_SCORED_CTE = f"""
     GROUP BY s.asset_id
   ), finding_agg AS (
     -- Not a scoring input (see note above) — kept only to explain the score.
+    -- The four bool_or flags identify which §12.5 recommendation template(s)
+    -- apply, by the exact title findings.py assigns each Layer 3 finding type.
     SELECT asset_id,
       count(*) FILTER (WHERE severity='critical') AS critical_finding_count,
       count(*) FILTER (WHERE severity='high') AS high_finding_count,
       count(*) FILTER (WHERE severity='medium') AS medium_finding_count,
-      count(*) AS open_finding_count
+      count(*) AS open_finding_count,
+      bool_or(title = 'Legacy SMB protocol detected') AS has_smbv1_finding,
+      bool_or(title = 'Anonymous FTP access accepted') AS has_anon_ftp_finding,
+      bool_or(title = 'Remote Desktop service exposed') AS has_rdp_exposure_finding,
+      bool_or(title IN ('Expired TLS certificate detected','TLS certificate expires soon')) AS has_cert_finding
     FROM findings
     WHERE status='open'
     GROUP BY asset_id
@@ -611,6 +620,10 @@ _ASSET_RISK_SCORED_CTE = f"""
       COALESCE(fa.high_finding_count,0) AS high_finding_count,
       COALESCE(fa.medium_finding_count,0) AS medium_finding_count,
       COALESCE(fa.open_finding_count,0) AS open_finding_count,
+      COALESCE(fa.has_smbv1_finding,false) AS has_smbv1_finding,
+      COALESCE(fa.has_anon_ftp_finding,false) AS has_anon_ftp_finding,
+      COALESCE(fa.has_rdp_exposure_finding,false) AS has_rdp_exposure_finding,
+      COALESCE(fa.has_cert_finding,false) AS has_cert_finding,
       LEAST(COALESCE(fa.critical_finding_count,0)*40 + COALESCE(fa.high_finding_count,0)*20 + COALESCE(fa.medium_finding_count,0)*5,100) AS finding_pressure_score,
       ROUND(COALESCE(va.max_cvss,0)/10.0*100,1) AS severity_normalized,
       ROUND(COALESCE(va.max_epss,0)*100,1) AS epss_normalized,
@@ -644,16 +657,32 @@ _RISK_BAND_CASE = """CASE WHEN risk_score >= 85 THEN 'critical'
 
 def _recommended_action(row):
     """Rule-based recommendation engine, project guide §12.5 — deterministic,
-    no generative-AI dependency, one short template per condition."""
+    no generative-AI dependency, one short template per condition. Every
+    condition the asset currently matches is combined into one action line,
+    same as the worked example in §13.2 ("validate/patch KEV vulnerability;
+    disable SMBv1; restrict RDP") rather than returning only the single
+    highest-priority driver."""
+    actions = []
     if row["has_kev"]:
-        return "Prioritize vendor-supported remediation/mitigation; verify exposure and rescan after action."
+        actions.append("prioritize vendor-supported remediation/mitigation; verify exposure and rescan after action")
     if row["max_cvss"] >= 7 and row["max_epss"] >= 0.5:
-        return "Prioritize validation and vendor remediation because both impact and exploitation likelihood are elevated."
-    if row["critical_finding_count"] or row["high_finding_count"]:
-        return "Review and remediate the open high-severity exposure findings on this asset, then rescan."
-    if row["active_vuln_count"]:
-        return "Validate the matched CVEs against the actual deployed version, then plan remediation."
-    return "No urgent action required; continue routine monitoring."
+        actions.append("prioritize validation and vendor remediation because both impact and exploitation likelihood are elevated")
+    if row["has_smbv1_finding"]:
+        actions.append("disable SMBv1 after validating business dependencies, then rescan")
+    if row["has_anon_ftp_finding"]:
+        actions.append("disable anonymous FTP access unless explicitly required; restrict writable areas and network reachability")
+    if row["has_rdp_exposure_finding"]:
+        actions.append("restrict RDP to approved management sources/VPN and enforce strong authentication policy")
+    if row["has_cert_finding"]:
+        actions.append("renew/replace the certificate and verify service continuity")
+    if not actions and row["active_vuln_count"]:
+        actions.append("validate the matched CVEs against the actual deployed version, then plan remediation")
+    if not actions and (row["critical_finding_count"] or row["high_finding_count"]):
+        actions.append("review and remediate the open high-severity exposure findings on this asset, then rescan")
+    if not actions:
+        return "No urgent action required; continue routine monitoring."
+    combined = "; ".join(actions)
+    return combined[0].upper() + combined[1:] + "."
 
 
 def asset_risk_ranking():

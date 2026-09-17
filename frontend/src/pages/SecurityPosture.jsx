@@ -1,4 +1,4 @@
-import { Target, TrendingUp, TrendingDown, Minus, GitCompare, ArrowRight, Wrench, ListChecks } from 'lucide-react'
+import { Target, TrendingUp, TrendingDown, Minus, GitCompare, ArrowRight } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import EmptyState from '../components/EmptyState'
@@ -22,6 +22,10 @@ function riskDrivers(a) {
   if (a.max_cvss >= 9) drivers.push(`Critical severity vulnerability (CVSS ${a.max_cvss})`)
   else if (a.max_cvss >= 7) drivers.push(`High severity vulnerability (CVSS ${a.max_cvss})`)
   if (a.max_epss >= 0.5) drivers.push(`High exploitation probability (EPSS ${Math.round(a.max_epss * 100)}%)`)
+  if (a.has_smbv1_finding) drivers.push('Legacy SMBv1 protocol enabled')
+  if (a.has_anon_ftp_finding) drivers.push('Anonymous FTP access accepted')
+  if (a.has_rdp_exposure_finding) drivers.push('RDP broadly exposed')
+  if (a.has_cert_finding) drivers.push('TLS certificate expired or expiring soon')
   if (a.critical_finding_count) drivers.push(`${a.critical_finding_count} critical exposure finding${a.critical_finding_count === 1 ? '' : 's'} open`)
   if (a.high_finding_count) drivers.push(`${a.high_finding_count} high-severity exposure finding${a.high_finding_count === 1 ? '' : 's'} open`)
   if (a.criticality === 'critical_service' || a.criticality === 'business_server') drivers.push('Tagged as a high-importance asset')
@@ -75,36 +79,6 @@ export default function SecurityPosture() {
         <p className="text-sm text-[var(--text-muted)]">The single big-picture view — pulling risk scores, recent changes, and top priorities from every layer into one screen</p>
       </div>
 
-      <div className="card border-[var(--accent-border)] bg-[linear-gradient(135deg,var(--accent-bg),var(--bg-surface))]">
-        <div className="flex gap-3">
-          <Target size={19} className="text-[var(--accent)] shrink-0 mt-0.5" />
-          <div>
-            <div className="text-sm font-semibold text-[var(--text-primary)]">How to read this layer</div>
-            <p className="text-xs text-[var(--text-secondary)] leading-relaxed mt-1">
-              Every other page answers one narrow question. This page answers "what should we do today?" by combining the
-              Risk Engine's scores (Layer 8) with the most recent network changes (Layer 7) into one prioritized view. It
-              does not compute anything new itself — everything here is drawn directly from those two layers.
-            </p>
-          </div>
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="flex gap-3">
-          <Wrench size={18} className="text-[var(--text-muted)] shrink-0 mt-0.5" />
-          <div>
-            <div className="text-sm font-semibold text-[var(--text-primary)]">What was fixed here</div>
-            <p className="text-xs text-[var(--text-secondary)] leading-relaxed mt-1">
-              <strong>Problem:</strong> this dashboard was missing several of the project guide's 7 required summary cards, and its
-              priority list gave one vague sentence per asset instead of concrete reasons and a concrete action. <strong>Fix:</strong> all
-              7 required cards are now here (discovered, unknown/new, high/critical, open findings, KEV matches, new exposures, posture
-              trend), and each entry in "Top priority actions" now lists every concrete risk driver plus an explicit recommended action —
-              matching the guide's own example format.
-            </p>
-          </div>
-        </div>
-      </div>
-
       <div className="card flex items-center gap-4">
         <div className={`pill ${BAND_TONE[overallBand] || 'pill--ok'} text-sm px-4 py-2`}>{overallBand.toUpperCase()}</div>
         <div>
@@ -128,23 +102,6 @@ export default function SecurityPosture() {
           <div>
             <div className="text-xs font-medium uppercase tracking-[.06em] text-[var(--text-secondary)]">Posture trend</div>
             <div className={`text-lg font-semibold ${posture.tone}`}>{posture.label}</div>
-          </div>
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="flex gap-3">
-          <ListChecks size={18} className="text-[var(--text-muted)] shrink-0 mt-0.5" />
-          <div>
-            <div className="text-sm font-semibold text-[var(--text-primary)]">How to resolve what you find here</div>
-            <p className="text-xs text-[var(--text-secondary)] leading-relaxed mt-1">
-              This app detects and prioritizes — it does not auto-fix anything, by design (no automatic remediation). The loop is:
-              <strong> (1)</strong> the priority queue below tells you what's wrong and what to do about it, <strong>(2)</strong> someone
-              applies that fix on the actual device (disables SMBv1, patches the software, restricts RDP, renews the certificate, etc.),
-              <strong> (3)</strong> you rescan — the app compares the new scan to the last one and marks the issue resolved on its own
-              once it's actually gone, no manual step required. You can also mark a finding "resolved" or "accepted" directly from the
-              Findings/Vulnerabilities pages if you want to record that now.
-            </p>
           </div>
         </div>
       </div>

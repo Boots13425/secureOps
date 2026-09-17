@@ -3,7 +3,7 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
-AssetStatus = Literal["known", "unknown", "approved", "missing", "offline"]
+AssetStatus = Literal["known", "unknown", "approved", "missing"]
 DeviceType = Literal["PC", "server", "router", "printer", "phone", "unknown"]
 # Project guide §12.4 — organizational value of the asset.
 AssetCriticality = Literal[

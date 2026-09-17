@@ -51,22 +51,6 @@ export default function Telemetry() {
         <p className="text-sm text-[var(--text-muted)]">What changed between two scans, and how your network has trended over recent scans</p>
       </div>
 
-      <div className="card border-[var(--accent-border)] bg-[linear-gradient(135deg,var(--accent-bg),var(--bg-surface))]">
-        <div className="flex gap-3">
-          <GitCompare size={19} className="text-[var(--accent)] shrink-0 mt-0.5" />
-          <div>
-            <div className="text-sm font-semibold text-[var(--text-primary)]">How to read this layer</div>
-            <p className="text-xs text-[var(--text-secondary)] leading-relaxed mt-1">
-              Every other page shows what's true right now. This page compares two completed scans directly —
-              devices that appeared or disappeared, ports that opened, closed, or had their service version change,
-              OS/vendor/MAC/hostname changes, and security findings that newly appeared or got resolved — plus a
-              trend of device count, open ports, and Layer 8 risk score across your last several scans. By default
-              it compares your two most recent scans; use the pickers below to compare any two instead.
-            </p>
-          </div>
-        </div>
-      </div>
-
       <div className="card flex items-end gap-3 flex-wrap">
         <div>
           <label className="block text-xs text-[var(--text-muted)] mb-1.5">Baseline scan (from)</label>

@@ -16,8 +16,8 @@ const WEEK_MS = 7 * 24 * 60 * 60 * 1000
 function computeMetrics(devices) {
   if (!devices || devices.length === 0) return null
   const total = devices.length
-  const present = devices.filter((d) => !['missing', 'offline'].includes(d.status)).length
-  const missing = devices.filter((d) => ['missing', 'offline'].includes(d.status)).length
+  const present = devices.filter((d) => d.status !== 'missing').length
+  const missing = devices.filter((d) => d.status === 'missing').length
   const unknown = devices.filter((d) => d.status === 'unknown').length
   const approved = devices.filter((d) => d.status === 'approved').length
   const newThisWeek = devices.filter((d) => d.first_seen && Date.now() - new Date(d.first_seen).getTime() < WEEK_MS).length
@@ -55,7 +55,7 @@ const DURATION_OPTIONS = [5, 6, 7, 8, 9, 10]
 
 export default function Dashboard() {
   // Everything on this page describes "what's here right now" (the latest
-  // scan), except Missing/offline and the trend chart below — those only
+  // scan), except Missing and the trend chart below — those only
   // mean something when compared against the full history, so they read
   // from allDevices (useDevices, unfiltered) instead of the current-scan list.
   const { data: devices, isLoading, latestScan, hasCompletedScan } = useCurrentDevices()
@@ -80,7 +80,7 @@ export default function Dashboard() {
   }
 
   const metrics = computeMetrics(devices)
-  const missingCount = (allDevices || []).filter((d) => ['missing', 'offline'].includes(d.status)).length
+  const missingCount = (allDevices || []).filter((d) => d.status === 'missing').length
   const osBreakdown = devices ? computeBreakdown(devices, (d) => d.os_name, 'Not identified') : []
   const deviceTypeBreakdown = devices ? computeBreakdown(devices, (d) => d.device_type, 'Unknown') : []
   const recentDevices = devices ? [...devices].sort((a, b) => new Date(b.last_seen) - new Date(a.last_seen)).slice(0, 7) : []
@@ -137,7 +137,7 @@ export default function Dashboard() {
         />
         <MetricCard label="Observed" value={metrics?.present} sub={metrics ? 'all responded in this scan' : hasCompletedScan ? '' : 'No completed scan yet'} tone="ok" />
         <MetricCard
-          label="Missing / offline"
+          label="Missing"
           value={missingCount}
           sub="seen before, absent from the last scan"
           tone="danger"
