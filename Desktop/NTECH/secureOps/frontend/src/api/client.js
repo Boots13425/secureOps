@@ -1,0 +1,236 @@
+import axios from 'axios'
+import mockDevices from '../mocks/devices.json'
+import mockScanActivity from '../mocks/scan-activity.json'
+
+export const USE_MOCKS = false
+
+export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8007/api/v1'
+
+const http = axios.create({
+  baseURL: API_BASE_URL,
+})
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+export async function getDevices(filters = {}) {
+  if (USE_MOCKS) {
+    await delay(200)
+    return mockDevices
+  }
+  const params = {}
+  if (filters.status) params.status = filters.status
+  if (filters.deviceType) params.type = filters.deviceType
+  if (filters.scanId) params.scan_id = filters.scanId
+  const { data } = await http.get('/devices', { params })
+  return data.data
+}
+
+export async function getDevice(assetId) {
+  const devices = await getDevices()
+  const device = devices.find((item) => item.id === assetId)
+  if (!device) throw new Error('Device not found')
+  return device
+}
+
+export async function getDeviceServices(assetId) {
+  const { data } = await http.get(`/devices/${assetId}/services`)
+  return data.data
+}
+
+export async function patchDevice(assetId, payload) {
+  const { data } = await http.patch(`/devices/${assetId}`, payload)
+  return data.data
+}
+
+export async function getScanActivity(limit = 8, scanId) {
+  if (USE_MOCKS) {
+    await delay(200)
+    return mockScanActivity
+  }
+  const params = { limit }
+  if (scanId) params.scan_id = scanId
+  const { data } = await http.get('/scan/activity', { params })
+  return data.data
+}
+
+export async function getScanHistory() {
+  const { data } = await http.get('/scan/history')
+  return data.data
+}
+
+export async function getScanSessions() {
+  const { data } = await http.get('/scan/sessions')
+  return data.data
+}
+
+export async function getServices(filters = {}) {
+  const params = {}
+  if (filters.confidence) params.confidence = filters.confidence
+  if (filters.enrichmentStatus) params.enrichment_status = filters.enrichmentStatus
+  if (filters.port) params.port = filters.port
+  if (filters.query) params.q = filters.query
+  if (filters.scanId) params.scan_id = filters.scanId
+  const { data } = await http.get('/services', { params })
+  return data.data
+}
+
+export async function getServicesSummary() {
+  const { data } = await http.get('/services/summary')
+  return data.data
+}
+
+export async function getFindings(filters = {}) {
+  const params = {}
+  if (filters.status) params.status = filters.status
+  if (filters.severity) params.severity = filters.severity
+  if (filters.confidence) params.confidence = filters.confidence
+  if (filters.checkId) params.check_id = filters.checkId
+  if (filters.query) params.q = filters.query
+  if (filters.scanId) params.scan_id = filters.scanId
+  const { data } = await http.get('/findings', { params })
+  return data.data
+}
+
+export async function getFindingsSummary() {
+  const { data } = await http.get('/findings/summary')
+  return data.data
+}
+
+export async function updateFindingStatus({ findingId, status }) {
+  const { data } = await http.patch(`/findings/${findingId}`, { status })
+  return data.data
+}
+
+// No dedicated backend endpoint for a single asset's findings — filter the
+// same list the Findings page uses rather than adding a redundant route.
+export async function getDeviceFindings(assetId) {
+  const findings = await getFindings()
+  return findings.filter((finding) => finding.asset_id === assetId)
+}
+
+export async function getVulnerabilities(filters = {}) {
+  const params = {}
+  if (filters.status) params.status = filters.status
+  if (filters.severity) params.severity = filters.severity
+  if (filters.confidence) params.confidence = filters.confidence
+  if (filters.query) params.q = filters.query
+  if (filters.scanId) params.scan_id = filters.scanId
+  const { data } = await http.get('/vulnerabilities', { params })
+  return data.data
+}
+
+export async function getVulnerabilitiesSummary() {
+  const { data } = await http.get('/vulnerabilities/summary')
+  return data.data
+}
+
+export async function updateVulnerabilityStatus({ matchId, status }) {
+  const { data } = await http.patch(`/vulnerabilities/${matchId}`, { status })
+  return data.data
+}
+
+export async function getEnrichmentRuns() {
+  const { data } = await http.get('/enrichment/runs', { params: { limit: 10 } })
+  return data.data
+}
+
+export async function refreshEnrichment() {
+  const { data } = await http.post('/enrichment/refresh')
+  return data
+}
+
+export async function getEpssIntelligence(filters = {}) {
+  const params = {}
+  if (filters.status) params.status = filters.status
+  if (filters.query) params.q = filters.query
+  if (filters.scanId) params.scan_id = filters.scanId
+  const { data } = await http.get('/epss/intelligence', { params })
+  return data.data
+}
+
+export async function getEpssSummary() {
+  const { data } = await http.get('/epss/summary')
+  return data.data
+}
+
+export async function getEpssRuns() {
+  const { data } = await http.get('/epss/runs', { params: { limit: 10 } })
+  return data.data
+}
+
+export async function refreshEpss() {
+  const { data } = await http.post('/epss/refresh')
+  return data
+}
+
+export async function getKevIntelligence(filters = {}) {
+  const params = {}
+  if (filters.status) params.status = filters.status
+  if (filters.query) params.q = filters.query
+  if (filters.scanId) params.scan_id = filters.scanId
+  const { data } = await http.get('/kev/intelligence', { params })
+  return data.data
+}
+
+export async function getKevSummary() {
+  const { data } = await http.get('/kev/summary')
+  return data.data
+}
+
+export async function getKevRuns() {
+  const { data } = await http.get('/kev/runs', { params: { limit: 10 } })
+  return data.data
+}
+
+export async function refreshKev() {
+  const { data } = await http.post('/kev/refresh')
+  return data
+}
+
+export async function getTelemetryChanges({ toScanId, fromScanId } = {}) {
+  const params = {}
+  if (toScanId) params.to_scan_id = toScanId
+  if (fromScanId) params.from_scan_id = fromScanId
+  const { data } = await http.get('/telemetry/changes', { params })
+  return data.data
+}
+
+export async function getTelemetryTrend(limit = 10) {
+  const { data } = await http.get('/telemetry/trend', { params: { limit } })
+  return data.data
+}
+
+export async function getRiskAssets() {
+  const { data } = await http.get('/risk/assets')
+  return data.data
+}
+
+export async function getRiskSummary() {
+  const { data } = await http.get('/risk/summary')
+  return data.data
+}
+
+export async function getScanNetwork() {
+  const { data } = await http.get('/scan/network')
+  return data.data
+}
+
+export async function startScanSession({ subnet, durationMinutes } = {}) {
+  const body = {}
+  if (subnet) body.subnet = subnet
+  if (durationMinutes) body.durationMinutes = durationMinutes
+  const { data } = await http.post('/scan/sessions', body)
+  return data
+}
+
+export async function stopScanSession(id) {
+  const { data } = await http.post(`/scan/sessions/${id}/stop`)
+  return data
+}
+
+export async function resumeScanSession(id) {
+  const { data } = await http.post(`/scan/sessions/${id}/resume`)
+  return data
+}
