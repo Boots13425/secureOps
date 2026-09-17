@@ -52,25 +52,26 @@ def update_asset(asset_id, values):
         row = conn.execute(f"UPDATE assets SET {assignments}, updated_at=now() WHERE asset_id=%s RETURNING asset_id AS id, *", [*allowed.values(), asset_id]).fetchone()
         return _serialize(row)
 
-    def save_device_criticality_policy(rows):
-      with connection() as conn:
+def save_device_criticality_policy(rows):
+    with connection() as conn:
         for row in rows:
-          conn.execute("""INSERT INTO device_criticality_policy(device_identifier,criticality,updated_at)
-            VALUES (%s,%s,now())
-            ON CONFLICT (device_identifier) DO UPDATE SET criticality=EXCLUDED.criticality,updated_at=now()""",
-                 (row["device_identifier"].lower(), row["criticality"]))
+            conn.execute("""INSERT INTO device_criticality_policy(device_identifier,criticality,updated_at)
+              VALUES (%s,%s,now())
+              ON CONFLICT (device_identifier) DO UPDATE SET criticality=EXCLUDED.criticality,updated_at=now()""",
+                         (row["device_identifier"].lower(), row["criticality"]))
         updated_at = conn.execute("SELECT max(updated_at) AS updated_at FROM device_criticality_policy").fetchone()["updated_at"]
-      return updated_at
+    return updated_at
 
-    def save_network_context_policy(rows):
-      with connection() as conn:
+
+def save_network_context_policy(rows):
+    with connection() as conn:
         for row in rows:
-          conn.execute("""INSERT INTO network_context_policy(subnet_cidr,context_label,notes,updated_at)
-            VALUES (%s,%s,%s,now())
-            ON CONFLICT (subnet_cidr) DO UPDATE SET context_label=EXCLUDED.context_label,notes=EXCLUDED.notes,updated_at=now()""",
-                 (row["subnet_cidr"], row["context_label"], row["notes"]))
+            conn.execute("""INSERT INTO network_context_policy(subnet_cidr,context_label,notes,updated_at)
+              VALUES (%s,%s,%s,now())
+              ON CONFLICT (subnet_cidr) DO UPDATE SET context_label=EXCLUDED.context_label,notes=EXCLUDED.notes,updated_at=now()""",
+                         (row["subnet_cidr"], row["context_label"], row["notes"]))
         updated_at = conn.execute("SELECT max(updated_at) AS updated_at FROM network_context_policy").fetchone()["updated_at"]
-      return updated_at
+    return updated_at
 
 
 def create_session(subnet, duration_minutes=None, source="manual"):
