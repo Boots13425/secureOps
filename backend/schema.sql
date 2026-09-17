@@ -36,6 +36,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_assets_mac ON assets (mac_address) WHERE ma
 CREATE INDEX IF NOT EXISTS idx_assets_ip ON assets (ip_address);
 CREATE INDEX IF NOT EXISTS idx_assets_status_type ON assets (status, device_type);
 
+CREATE TABLE IF NOT EXISTS device_criticality_policy (
+  device_identifier text PRIMARY KEY,
+  criticality varchar(12) NOT NULL CHECK (criticality IN ('low','normal','high','critical')),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS network_context_policy (
+  subnet_cidr cidr PRIMARY KEY,
+  context_label text NOT NULL,
+  notes text NOT NULL DEFAULT '',
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS asset_observations (
   observation_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   asset_id uuid NOT NULL REFERENCES assets(asset_id) ON DELETE CASCADE,

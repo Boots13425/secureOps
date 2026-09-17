@@ -6,6 +6,7 @@ from psycopg.types.json import Jsonb
 from .database import connection
 from .scanner import HostObservation
 from .findings import evaluate_host
+from .risk_engine import policy_exposure, policy_criticality, recommendations, score_asset
 
 
 def _serialize(row):
@@ -50,6 +51,26 @@ def update_asset(asset_id, values):
     with connection() as conn:
         row = conn.execute(f"UPDATE assets SET {assignments}, updated_at=now() WHERE asset_id=%s RETURNING asset_id AS id, *", [*allowed.values(), asset_id]).fetchone()
         return _serialize(row)
+
+    def save_device_criticality_policy(rows):
+      with connection() as conn:
+        for row in rows:
+          conn.execute("""INSERT INTO device_criticality_policy(device_identifier,criticality,updated_at)
+            VALUES (%s,%s,now())
+            ON CONFLICT (device_identifier) DO UPDATE SET criticality=EXCLUDED.criticality,updated_at=now()""",
+                 (row["device_identifier"].lower(), row["criticality"]))
+        updated_at = conn.execute("SELECT max(updated_at) AS updated_at FROM device_criticality_policy").fetchone()["updated_at"]
+      return updated_at
+
+    def save_network_context_policy(rows):
+      with connection() as conn:
+        for row in rows:
+          conn.execute("""INSERT INTO network_context_policy(subnet_cidr,context_label,notes,updated_at)
+            VALUES (%s,%s,%s,now())
+            ON CONFLICT (subnet_cidr) DO UPDATE SET context_label=EXCLUDED.context_label,notes=EXCLUDED.notes,updated_at=now()""",
+                 (row["subnet_cidr"], row["context_label"], row["notes"]))
+        updated_at = conn.execute("SELECT max(updated_at) AS updated_at FROM network_context_policy").fetchone()["updated_at"]
+      return updated_at
 
 
 def create_session(subnet, duration_minutes=None, source="manual"):
@@ -573,18 +594,65 @@ _ASSET_RISK_SCORED_CTE = """
 
 def asset_risk_ranking():
     with connection() as conn:
-        rows = conn.execute(_ASSET_RISK_SCORED_CTE + """
-          SELECT *,
-            CASE WHEN has_kev THEN 'critical'
-                 WHEN risk_score >= 80 THEN 'critical'
-                 WHEN risk_score >= 60 THEN 'high'
-                 WHEN risk_score >= 35 THEN 'medium'
-                 ELSE 'low' END AS risk_band,
-            ROW_NUMBER() OVER (ORDER BY has_kev DESC,risk_score DESC NULLS LAST) AS priority_rank,
-            count(*) OVER () AS priority_total
-          FROM scored
-          ORDER BY has_kev DESC,risk_score DESC NULLS LAST""").fetchall()
-        return [_serialize(row) for row in rows]
+        assets = conn.execute("""
+          SELECT a.asset_id,host(a.ip_address) AS ip_address,a.hostname,a.mac_address::text,
+                 a.device_type,a.status,
+                 COALESCE((SELECT jsonb_agg(jsonb_build_object('port',s.port,'protocol',s.protocol,
+                   'name',s.service_name,'product',s.product,'version',s.version))
+                   FROM services s WHERE s.asset_id=a.asset_id AND s.state='open'),'[]'::jsonb) AS services,
+                 COALESCE((SELECT jsonb_agg(jsonb_build_object('title',f.title,'check_id',f.check_id,
+                   'evidence',f.evidence,'why_it_matters',f.why_it_matters))
+                   FROM findings f WHERE f.asset_id=a.asset_id AND f.status='open'),'[]'::jsonb) AS findings,
+                 COALESCE((SELECT jsonb_agg(jsonb_build_object('cve_id',v.cve_id,
+                   'cvss',v.cvss_base_score,'epss',e.epss_score,'kev',v.kev_flag))
+                   FROM service_vulnerabilities sv
+                   JOIN vulnerabilities v ON v.cve_id=sv.cve_id
+                   JOIN services s ON s.service_id=sv.service_id
+                   LEFT JOIN epss_current_scores e ON e.cve_id=v.cve_id
+                   WHERE s.asset_id=a.asset_id AND sv.status='active'),'[]'::jsonb) AS vulnerabilities
+          FROM assets a WHERE a.status != 'missing'
+        """).fetchall()
+        device_rows = conn.execute("SELECT device_identifier,criticality FROM device_criticality_policy").fetchall()
+        network_rows = conn.execute("SELECT subnet_cidr::text,context_label FROM network_context_policy").fetchall()
+
+    device_policy = {row["device_identifier"].strip().lower(): row["criticality"] for row in device_rows}
+    network_policy = [{"network": ipaddress.ip_network(row["subnet_cidr"]), "context_label": row["context_label"]} for row in network_rows]
+    ranking = []
+    for asset in assets:
+        vulnerabilities = asset["vulnerabilities"] or []
+        severity = max((float(item.get("cvss") or 0) for item in vulnerabilities), default=0) * 10
+        epss = max((float(item.get("epss") or 0) for item in vulnerabilities), default=0) * 100
+        kev = 100 if any(item.get("kev") for item in vulnerabilities) else 0
+        exposure, unmapped, context_label = policy_exposure(asset["ip_address"], network_policy)
+        criticality, criticality_label = policy_criticality(
+            device_policy, (asset["hostname"], asset["ip_address"], asset["mac_address"])
+        )
+        scored = {
+            **_serialize(asset),
+            "device_identifier": asset["hostname"] or asset["ip_address"],
+            "severity_normalized": round(severity, 1),
+            "epss_normalized": round(epss, 1),
+            "kev_normalized": kev,
+            "exposure": exposure,
+            "exposure_unmapped": unmapped,
+            "exposure_context": context_label,
+            "asset_criticality": criticality,
+            "criticality": criticality_label,
+        }
+        score, label = score_asset(severity, epss, kev, exposure, criticality)
+        scored.update({"score": score, "label": label, "risk_score": score, "risk_band": label.lower()})
+        scored["max_cvss"] = round(severity / 10, 1)
+        scored["max_epss"] = round(epss / 100, 4)
+        scored["has_kev"] = kev == 100
+        scored["active_vuln_count"] = len(vulnerabilities)
+        scored["recommendations"] = recommendations(scored)
+        scored["priority_total"] = 0
+        ranking.append(scored)
+    ranking.sort(key=lambda item: (-item["score"], item["device_identifier"]))
+    for index, asset in enumerate(ranking, start=1):
+        asset["priority_rank"] = index
+        asset["priority_total"] = len(ranking)
+    return ranking
 
 
 # Now that Layer 8 exists, the trend uses assets' real current risk score
@@ -614,7 +682,9 @@ def risk_summary():
         "assets_scored": len(ranking),
         "critical": sum(1 for r in ranking if r["risk_band"] == "critical"),
         "high": sum(1 for r in ranking if r["risk_band"] == "high"),
-        "medium": sum(1 for r in ranking if r["risk_band"] == "medium"),
+    "elevated": sum(1 for r in ranking if r["label"] == "Elevated"),
+    "moderate": sum(1 for r in ranking if r["label"] == "Moderate"),
+    "medium": sum(1 for r in ranking if r["label"] in {"Elevated", "Moderate"}),
         "low": sum(1 for r in ranking if r["risk_band"] == "low"),
         "kev_matches": sum(1 for r in ranking if r["has_kev"]),
         "top_risk_asset": ranking[0] if ranking else None,

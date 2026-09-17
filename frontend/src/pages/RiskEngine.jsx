@@ -1,11 +1,11 @@
 import { useState } from 'react'
 import { BrainCircuit, Flame } from 'lucide-react'
 import EmptyState from '../components/EmptyState'
-import { API_BASE_URL } from '../api/client'
+import { uploadRiskPolicy } from '../api/client'
 import MetricCard from '../components/MetricCard'
 import { useRiskAssets, useRiskSummary, useUpdateCriticality } from '../hooks/useRisk'
 
-const BAND_TONE = { critical: 'pill--danger', high: 'pill--danger', medium: 'pill--warn', low: 'pill--ok' }
+const BAND_TONE = { critical: 'pill--danger', high: 'pill--danger', elevated: 'pill--warn', moderate: 'pill--warn', low: 'pill--ok' }
 const CRITICALITY_OPTIONS = ['low', 'normal', 'high', 'critical']
 
 function ScoreBar({ label, value, max = 100 }) {
@@ -28,34 +28,47 @@ export default function RiskEngine() {
   const { data: summary, refetch: refetchSummary } = useRiskSummary()
   const updateCriticality = useUpdateCriticality()
 
-  const [uploadStatus, setUploadStatus] = useState(null)
+  const [files, setFiles] = useState({ criticality: null, network: null })
+  const [uploadStatus, setUploadStatus] = useState({ criticality: null, network: null })
 
-  async function handlePolicyUpload(event) {
-    const file = event.target.files[0]
+  async function handlePolicyUpload(kind) {
+    const file = files[kind]
     if (!file) return
-    setUploadStatus('Uploading...')
-    const formData = new FormData()
-    formData.append('file', file)
+    setUploadStatus((current) => ({ ...current, [kind]: { state: 'uploading', message: 'Uploading...' } }))
     try {
-      const res = await fetch(`${API_BASE_URL}/assets/policy/upload`, {
-        method: 'POST',
-        body: formData,
-      })
-      const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || 'The policy upload failed.')
+      const endpoint = kind === 'criticality' ? '/risk/policy/device-criticality' : '/risk/policy/network-context'
+      const data = await uploadRiskPolicy(endpoint, file)
       await Promise.all([refetchAssets(), refetchSummary()])
-      setUploadStatus(`Updated ${data.updated} device(s).${data.not_found.length ? ` Not found: ${data.not_found.join(', ')}` : ''}`)
+      setUploadStatus((current) => ({ ...current, [kind]: { state: 'success', message: `${data.rows_uploaded} row(s) uploaded at ${new Date(data.updated_at).toLocaleString()}.` } }))
     } catch (err) {
-      setUploadStatus(`Upload failed: ${err.message}`)
+      const detail = err.response?.data?.detail
+      const errors = detail?.errors?.map((item) => `Row ${item.row}: ${item.message}`).join(' ') || detail?.message || err.message
+      setUploadStatus((current) => ({ ...current, [kind]: { state: 'error', message: errors } }))
     }
-    event.target.value = ''
+  }
+
+  function PolicyCard({ kind, title, description }) {
+    const status = uploadStatus[kind]
+    return (
+      <div className="card border-[var(--border)] bg-[var(--bg-surface)] p-4">
+        <div className="text-sm font-semibold text-[var(--text-primary)] mb-1">{title}</div>
+        <p className="text-xs text-[var(--text-secondary)] mb-3">{description}</p>
+        <div className="flex items-center gap-3 flex-wrap">
+          <input type="file" accept=".csv" onChange={(event) => setFiles((current) => ({ ...current, [kind]: event.target.files[0] || null }))} className="text-xs text-[var(--text-secondary)]" />
+          <button type="button" onClick={() => handlePolicyUpload(kind)} disabled={!files[kind] || status?.state === 'uploading'} className="bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-white text-xs font-medium px-3 py-2 rounded-[var(--radius-sm)]">
+            {status?.state === 'uploading' ? 'Uploading...' : 'Upload policy'}
+          </button>
+        </div>
+        {status && <p role={status.state === 'error' ? 'alert' : undefined} className={`text-xs mt-2 ${status.state === 'error' ? 'text-[var(--danger)]' : 'text-[var(--text-primary)]'}`}>{status.message}</p>}
+      </div>
+    )
   }
 
   return (
     <div className="flex flex-col gap-5">
       <div>
         <h1 className="text-2xl font-semibold text-[var(--text-primary)]">Risk & interpretation engine</h1>
-        <p className="text-sm text-[var(--text-muted)]">One risk score per asset, combining severity, likelihood, exposure, and how much it matters to you</p>
+        <p className="text-sm text-[var(--text-muted)]">ETSNTECH prototype prioritization index for each asset</p>
       </div>
 
       <div className="card border-[var(--accent-border)] bg-[linear-gradient(135deg,var(--accent-bg),var(--bg-surface))]">
@@ -63,31 +76,13 @@ export default function RiskEngine() {
           <BrainCircuit size={19} className="text-[var(--accent)] shrink-0 mt-0.5" />
           <div>
             <div className="text-sm font-semibold text-[var(--text-primary)]">How this score is built</div>
-
-        <div className="card border-[var(--border)] bg-[var(--bg-surface)] p-4">
-          <div className="text-sm font-semibold text-[var(--text-primary)] mb-1">Upload asset criticality policy</div>
-          <p className="text-xs text-[var(--text-secondary)] mb-3">
-            CSV with columns: device_identifier, criticality (low, normal, high, critical)
-          </p>
-          <input
-            type="file"
-            accept=".csv"
-            onChange={handlePolicyUpload}
-            className="text-xs text-[var(--text-secondary)]"
-          />
-          {uploadStatus && (
-            <p className="text-xs mt-2 text-[var(--text-primary)]">{uploadStatus}</p>
-          )}
-        </div>
             <p className="text-xs text-[var(--text-secondary)] leading-relaxed mt-1">
-              Each asset gets a 0-100 score: <strong>severity</strong> (max CVSS of its active CVEs, 35%) + <strong>likelihood</strong> (EPSS
-              exploitation probability, 30%) + <strong>exposure</strong> (open security findings on it, weighted — critical findings count
-              more than high, high counts more than medium, 20%) + <strong>criticality</strong> (how much this asset matters to your
-              organization, 15%). Criticality is set by you below — nothing in a scan can tell the system that a device is your file
-              server rather than a spare printer. A confirmed CISA KEV match always forces the score to "critical", regardless of the
-              math, matching how KEV outranks everything else in this app. Every asset also gets an explicit priority rank, so "single
-              risk score and priority" is literal, not just an implied sort order.
+              The ETSNTECH prototype prioritization index combines severity, EPSS likelihood, KEV status, network exposure, and asset criticality. It is a prioritization index, not a probability or universal risk standard.
             </p>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mt-4">
+              <PolicyCard kind="criticality" title="Device criticality policy" description="CSV columns: device_identifier, criticality" />
+              <PolicyCard kind="network" title="Network context policy" description="CSV columns: subnet_cidr, context_label, notes" />
+            </div>
           </div>
         </div>
       </div>
@@ -95,7 +90,7 @@ export default function RiskEngine() {
       <div className="grid grid-cols-5 gap-4">
         <MetricCard label="Critical" value={summary?.critical} sub="fix immediately" tone="danger" />
         <MetricCard label="High" value={summary?.high} sub="fix soon" tone="danger" />
-        <MetricCard label="Medium" value={summary?.medium} sub="monitor" tone="warn" />
+        <MetricCard label="Elevated" value={summary?.elevated} sub="monitor" tone="warn" />
         <MetricCard label="Low" value={summary?.low} sub="acceptable for now" tone="ok" />
         <MetricCard label="KEV matches" value={summary?.kev_matches} sub="confirmed exploited" tone="danger" />
       </div>
@@ -111,21 +106,21 @@ export default function RiskEngine() {
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="pill pill--info">Priority #{a.priority_rank} of {a.priority_total}</span>
                     <span className="text-base font-semibold text-[var(--text-primary)]">{a.hostname || 'Unknown'}</span>
-                    <span className={`pill ${BAND_TONE[a.risk_band] || 'pill--info'}`}>{a.risk_band} risk</span>
+                    <span className={`pill ${BAND_TONE[a.risk_band] || 'pill--info'}`}>{a.label}</span>
                     {a.has_kev && <span className="pill pill--danger inline-flex items-center gap-1"><Flame size={11} />Known Exploited</span>}
                   </div>
                   <div className="text-xs text-[var(--text-muted)] mt-1.5 mono">{a.ip_address} · {a.device_type}</div>
                 </div>
                 <div className="text-right">
                   <div className="text-2xl font-semibold text-[var(--text-primary)]">{a.risk_score}</div>
-                  <div className="text-[10px] uppercase text-[var(--text-muted)]">risk score / 100</div>
+                  <div className="text-[10px] uppercase text-[var(--text-muted)]">prioritization index / 100</div>
                 </div>
               </div>
 
               <div className="grid grid-cols-4 gap-4 mt-4">
                 <ScoreBar label="Max CVSS" value={a.max_cvss} max={10} />
                 <ScoreBar label="Max EPSS %" value={Math.round((a.max_epss || 0) * 100)} />
-                <ScoreBar label="Exposure (weighted findings)" value={a.exposure_score} />
+                <ScoreBar label={`Exposure${a.exposure_unmapped ? ' (unmapped)' : ''}`} value={a.exposure} />
                 <div>
                   <label className="block text-[10px] text-[var(--text-muted)] mb-0.5">Criticality (set by you)</label>
                   <select

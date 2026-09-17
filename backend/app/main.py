@@ -18,6 +18,10 @@ from .epss import coordinator as epss_coordinator, recalculate_organization_risk
 from .kev import refresh_kev as run_kev_refresh
 import csv
 import io
+from datetime import datetime, timezone
+from ipaddress import ip_network
+
+from .risk_engine import NETWORK_CONTEXT_VALUES
 
 class EventHub:
     def __init__(self): self.clients: set[WebSocket] = set(); self.loop = None
@@ -217,39 +221,69 @@ def patch_device(asset_id: str, payload: AssetUpdate):
     hub.publish("ASSET_UPDATED", result)
     return {"data": result}
 
-@app.post("/api/v1/assets/policy/upload")
-async def upload_asset_policy(file: UploadFile = File(...)):
-    content = await file.read()
+def _policy_rows(content, required_headers, row_validator):
     try:
         reader = csv.DictReader(io.StringIO(content.decode("utf-8-sig")))
     except UnicodeDecodeError as exc:
-        raise HTTPException(400, "Policy file must be a UTF-8 CSV") from exc
+        raise HTTPException(400, {"message": "Policy file must be a UTF-8 CSV", "errors": []}) from exc
+    headers = [header.strip().lower() for header in (reader.fieldnames or []) if header is not None]
+    if set(headers) != required_headers or len(headers) != len(required_headers):
+        raise HTTPException(400, {"message": "CSV headers do not match the required columns", "expected": sorted(required_headers), "errors": []})
+    valid_rows, errors = [], []
+    for row_number, row in enumerate(reader, start=2):
+        normalized = {str(key).strip().lower(): (value or "").strip() for key, value in row.items() if key is not None}
+        error = row_validator(row_number, normalized)
+        if error:
+            errors.append(error)
+        else:
+            valid_rows.append(normalized)
+    if errors:
+        raise HTTPException(400, {"message": "Policy validation failed", "errors": errors})
+    if not valid_rows:
+        raise HTTPException(400, {"message": "Policy CSV contains no data rows", "errors": []})
+    return valid_rows
 
-    required = {"device_identifier", "criticality"}
-    headers = {header.strip().lower() for header in (reader.fieldnames or []) if header}
-    if not required.issubset(headers):
-        raise HTTPException(400, "CSV must contain device_identifier and criticality columns")
 
-    updated = 0
-    not_found = []
+@app.post("/api/v1/risk/policy/device-criticality")
+async def upload_device_criticality_policy(file: UploadFile = File(...)):
+    content = await file.read()
+    allowed = {"low", "normal", "high", "critical"}
 
-    for row in reader:
-        normalized_row = {str(key).strip().lower(): value for key, value in row.items() if key}
-        identifier = (normalized_row.get("device_identifier") or "").strip()
-        criticality = (normalized_row.get("criticality") or "").strip().lower()
+    def validate(row_number, row):
+        if not row["device_identifier"]:
+            return {"row": row_number, "message": "device_identifier must not be empty"}
+        if row["criticality"] not in allowed:
+            return {"row": row_number, "message": f"criticality must be one of {sorted(allowed)}, got '{row['criticality']}'"}
+        return None
 
-        if not identifier or criticality not in ("low", "normal", "high", "critical"):
-            continue
+    rows = _policy_rows(content, {"device_identifier", "criticality"}, validate)
+    updated_at = repository.save_device_criticality_policy(rows)
+    return {"rows_uploaded": len(rows), "updated_at": updated_at.isoformat()}
 
-        asset = repository.find_asset_by_identifier(identifier)
-        if not asset:
-            not_found.append(identifier)
-            continue
 
-        repository.update_asset(asset["asset_id"], {"criticality": criticality})
-        updated += 1
+@app.post("/api/v1/risk/policy/network-context")
+async def upload_network_context_policy(file: UploadFile = File(...)):
+    content = await file.read()
 
-    return {"updated": updated, "not_found": not_found}
+    def validate(row_number, row):
+        if not row["subnet_cidr"]:
+            return {"row": row_number, "message": "subnet_cidr must not be empty"}
+        try:
+            ip_network(row["subnet_cidr"], strict=False)
+        except ValueError:
+            return {"row": row_number, "message": f"subnet_cidr is not valid CIDR notation: '{row['subnet_cidr']}'"}
+        if row["context_label"] not in NETWORK_CONTEXT_VALUES:
+            return {"row": row_number, "message": f"context_label must be one of the six exact values, got '{row['context_label']}'"}
+        return None
+
+    rows = _policy_rows(content, {"subnet_cidr", "context_label", "notes"}, validate)
+    updated_at = repository.save_network_context_policy(rows)
+    return {"rows_uploaded": len(rows), "updated_at": updated_at.isoformat()}
+
+
+@app.post("/api/v1/assets/policy/upload")
+async def upload_asset_policy_compatibility(file: UploadFile = File(...)):
+    return await upload_device_criticality_policy(file)
 
 
 @app.get("/api/v1/scan/activity")

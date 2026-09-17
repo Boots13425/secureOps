@@ -6,7 +6,7 @@ import MetricCard from '../components/MetricCard'
 import { useRiskAssets, useRiskSummary } from '../hooks/useRisk'
 import { useTelemetryChanges, useTelemetryTrend } from '../hooks/useTelemetry'
 
-const BAND_TONE = { critical: 'pill--danger', high: 'pill--danger', medium: 'pill--warn', low: 'pill--ok' }
+const BAND_TONE = { critical: 'pill--danger', high: 'pill--danger', elevated: 'pill--warn', moderate: 'pill--warn', low: 'pill--ok' }
 
 // A short, transparent reason per asset, picking whichever factor actually
 // drove the score highest — same underlying numbers already shown on the
@@ -27,7 +27,7 @@ export default function SecurityPosture() {
   const { data: trend } = useTelemetryTrend(10)
 
   const topActions = (assets || []).slice(0, 5)
-  const overallBand = riskSummary?.critical > 0 ? 'critical' : riskSummary?.high > 0 ? 'high' : riskSummary?.medium > 0 ? 'medium' : 'low'
+  const overallBand = riskSummary?.critical > 0 ? 'critical' : riskSummary?.high > 0 ? 'high' : riskSummary?.elevated > 0 ? 'elevated' : riskSummary?.moderate > 0 ? 'moderate' : 'low'
 
   const trendData = (trend || []).map((row) => ({
     time: new Date(row.started_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }),
@@ -75,7 +75,7 @@ export default function SecurityPosture() {
       <div className="grid grid-cols-4 gap-4">
         <MetricCard label="Critical" value={riskSummary?.critical} sub="assets" tone="danger" />
         <MetricCard label="High" value={riskSummary?.high} sub="assets" tone="danger" />
-        <MetricCard label="Medium" value={riskSummary?.medium} sub="assets" tone="warn" />
+        <MetricCard label="Elevated" value={riskSummary?.elevated} sub="assets" tone="warn" />
         <MetricCard label="Low" value={riskSummary?.low} sub="assets" tone="ok" />
       </div>
 
@@ -98,7 +98,7 @@ export default function SecurityPosture() {
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="pill pill--info">#{a.priority_rank}</span>
                       <span className="text-[var(--text-primary)] font-medium truncate">{a.hostname || a.ip_address}</span>
-                      <span className={`pill ${BAND_TONE[a.risk_band] || 'pill--info'}`}>{a.risk_band}</span>
+                      <span className={`pill ${BAND_TONE[a.risk_band] || 'pill--info'}`}>{a.label}</span>
                     </div>
                     <div className="text-[var(--text-muted)] mt-1">{topReason(a)}</div>
                   </div>

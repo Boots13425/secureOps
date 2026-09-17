@@ -212,6 +212,13 @@ export async function getRiskSummary() {
   return data.data
 }
 
+export async function uploadRiskPolicy(endpoint, file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  const { data } = await http.post(endpoint, formData)
+  return data
+}
+
 export async function getScanNetwork() {
   const { data } = await http.get('/scan/network')
   return data.data
