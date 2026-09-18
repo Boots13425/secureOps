@@ -53,8 +53,11 @@ def refresh_kev(trigger_source: str = "scan") -> dict:
                 if entry:
                     conn.execute(
                         """UPDATE vulnerabilities SET kev_flag=true, kev_date_added=%s, kev_required_action=%s,
-                          kev_due_date=%s, updated_at=now() WHERE cve_id=%s""",
-                        (entry.get("dateAdded"), entry.get("requiredAction"), entry.get("dueDate"), cve_id),
+                          kev_due_date=%s, kev_known_ransomware_use=%s, updated_at=now() WHERE cve_id=%s""",
+                        (
+                            entry.get("dateAdded"), entry.get("requiredAction"), entry.get("dueDate"),
+                            (entry.get("knownRansomwareCampaignUse") == "Known"), cve_id,
+                        ),
                     )
                     flagged += 1
                 else:

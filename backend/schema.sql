@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS assets (
   device_type varchar(16) NOT NULL DEFAULT 'unknown' CHECK (device_type IN ('PC','server','router','printer','phone','unknown')),
   os_family text,
   os_confidence numeric(4,3) CHECK (os_confidence BETWEEN 0 AND 1),
-  status varchar(16) NOT NULL DEFAULT 'unknown' CHECK (status IN ('known','unknown','approved','missing','offline')),
+  status varchar(16) NOT NULL DEFAULT 'unknown' CHECK (status IN ('known','unknown','approved','missing')),
   first_seen timestamptz NOT NULL,
   last_seen timestamptz NOT NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
@@ -32,8 +32,40 @@ CREATE TABLE IF NOT EXISTS assets (
 -- matters to the organization — that has to come from a person. Defaults to
 -- 'normal' so untagged assets don't silently skew the risk ranking.
 ALTER TABLE assets ADD COLUMN IF NOT EXISTS criticality varchar(12) NOT NULL DEFAULT 'normal' CHECK (criticality IN ('low','normal','high','critical'));
+
+-- Layer 8 realignment: the project guide's EARI formula (§12.1-12.4) scores
+-- "asset criticality" and "network exposure" as two independent categorical
+-- inputs, each with its own 6-value table and 0-100 mapping — not the earlier
+-- ad hoc low/normal/high/critical scale, and not derived from open findings.
+-- Widen the column first since the new category names are longer than varchar(12).
+ALTER TABLE assets DROP CONSTRAINT IF EXISTS assets_criticality_check;
+ALTER TABLE assets ALTER COLUMN criticality TYPE varchar(24);
+UPDATE assets SET criticality = CASE criticality
+  WHEN 'low' THEN 'test_temporary' WHEN 'normal' THEN 'standard_workstation'
+  WHEN 'high' THEN 'privileged_workstation' WHEN 'critical' THEN 'critical_service'
+  ELSE criticality END;
+ALTER TABLE assets ALTER COLUMN criticality SET DEFAULT 'standard_workstation';
+ALTER TABLE assets ADD CONSTRAINT assets_criticality_check CHECK (criticality IN
+  ('test_temporary','peripheral','standard_workstation','privileged_workstation','business_server','critical_service'));
+
+-- Network exposure context (isolated lab vs. internet-facing, etc.) is the
+-- other organizational input the EARI formula needs and nothing in a scan
+-- can infer it either, so it is a person-set field just like criticality.
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS exposure varchar(24) NOT NULL DEFAULT 'staff_network';
+ALTER TABLE assets DROP CONSTRAINT IF EXISTS assets_exposure_check;
+ALTER TABLE assets ADD CONSTRAINT assets_exposure_check CHECK (exposure IN
+  ('isolated_lab','management_segment','server_vlan','staff_network','guest_network','internet_facing'));
 CREATE UNIQUE INDEX IF NOT EXISTS uq_assets_mac ON assets (mac_address) WHERE mac_address IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_assets_ip ON assets (ip_address);
+
+-- Project guide §5.1 lists exactly four organizational status values (Known,
+-- Unknown, Approved, Missing/Offline as one combined label) — 'offline' was
+-- carried as a fifth, distinct value that no scan code path ever assigned,
+-- so it was dead state duplicated defensively across the frontend. Fold any
+-- pre-existing 'offline' rows into 'missing' (same meaning) and drop it.
+UPDATE assets SET status='missing' WHERE status='offline';
+ALTER TABLE assets DROP CONSTRAINT IF EXISTS assets_status_check;
+ALTER TABLE assets ADD CONSTRAINT assets_status_check CHECK (status IN ('known','unknown','approved','missing'));
 CREATE INDEX IF NOT EXISTS idx_assets_status_type ON assets (status, device_type);
 
 CREATE TABLE IF NOT EXISTS device_criticality_policy (
@@ -216,6 +248,10 @@ ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS kev_flag boolean NOT NULL D
 ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS kev_date_added date;
 ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS kev_required_action text;
 ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS kev_due_date date;
+-- Project guide §10 KEV field list includes this as an optional contextual
+-- indicator alongside dateAdded/requiredAction/dueDate; it was fetched from
+-- the catalog but discarded, so add the column and start persisting it.
+ALTER TABLE vulnerabilities ADD COLUMN IF NOT EXISTS kev_known_ransomware_use boolean;
 CREATE INDEX IF NOT EXISTS idx_vulnerabilities_kev ON vulnerabilities (kev_flag) WHERE kev_flag;
 
 -- One row per KEV catalog check, same pattern as nvd_enrichment_runs and
@@ -238,10 +274,10 @@ CREATE TABLE IF NOT EXISTS service_vulnerabilities (
   service_id uuid NOT NULL REFERENCES services(service_id) ON DELETE CASCADE,
   cve_id varchar(24) NOT NULL REFERENCES vulnerabilities(cve_id) ON DELETE CASCADE,
   matched_cpe text NOT NULL,
-  match_confidence varchar(12) NOT NULL CHECK (match_confidence IN ('high','medium','low','confirmed')),
+  match_confidence varchar(12) NOT NULL CHECK (match_confidence IN ('high','medium','low')),
   match_wording text NOT NULL,
   match_reason text NOT NULL,
-  applicability_status varchar(16) NOT NULL DEFAULT 'candidate' CHECK (applicability_status IN ('candidate','likely','confirmed','rejected')),
+  applicability_status varchar(16) NOT NULL DEFAULT 'candidate' CHECK (applicability_status IN ('candidate','likely')),
   status varchar(16) NOT NULL DEFAULT 'active' CHECK (status IN ('active','dismissed','resolved')),
   first_seen timestamptz NOT NULL,
   last_seen timestamptz NOT NULL,
@@ -249,6 +285,21 @@ CREATE TABLE IF NOT EXISTS service_vulnerabilities (
   UNIQUE (service_id, cve_id)
 );
 CREATE INDEX IF NOT EXISTS idx_service_vulns_posture ON service_vulnerabilities (status, match_confidence, last_seen DESC);
+
+-- Project guide §8.3 defines a "Confirmed" match-confidence tier ("a specific
+-- approved check produces positive evidence"), but the 4 whitelisted Layer 3
+-- checks (SMBv1/anon-FTP/cert/RDP) are general misconfiguration checks, not
+-- confirmations of any specific CVE — nothing here can honestly produce
+-- 'confirmed' (or the matching 'rejected'/'confirmed' applicability values)
+-- without fabricating certainty the checks don't provide, which §2.2
+-- explicitly forbids. Drop the dead values rather than leave unreachable
+-- scaffolding; fold any pre-existing rows to their nearest real value.
+UPDATE service_vulnerabilities SET match_confidence='high' WHERE match_confidence='confirmed';
+UPDATE service_vulnerabilities SET applicability_status='likely' WHERE applicability_status IN ('confirmed','rejected');
+ALTER TABLE service_vulnerabilities DROP CONSTRAINT IF EXISTS service_vulnerabilities_match_confidence_check;
+ALTER TABLE service_vulnerabilities ADD CONSTRAINT service_vulnerabilities_match_confidence_check CHECK (match_confidence IN ('high','medium','low'));
+ALTER TABLE service_vulnerabilities DROP CONSTRAINT IF EXISTS service_vulnerabilities_applicability_status_check;
+ALTER TABLE service_vulnerabilities ADD CONSTRAINT service_vulnerabilities_applicability_status_check CHECK (applicability_status IN ('candidate','likely'));
 CREATE INDEX IF NOT EXISTS idx_service_vulns_cve ON service_vulnerabilities (cve_id);
 
 -- Layer 5: FIRST.org EPSS, downloaded once daily on its own schedule rather
@@ -323,3 +374,23 @@ CREATE TABLE IF NOT EXISTS scan_activity (
   created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_scan_activity_time ON scan_activity (created_at DESC);
+
+-- Layer 7 needs a RISK_CHANGED event type (project guide §11), but the EARI
+-- score (Layer 8) is always computed live from current CVSS/EPSS/KEV/finding
+-- state — nothing stores what an asset's score was "as of" a past scan, so
+-- there is nothing to diff. This snapshot is that missing history: one row
+-- per asset captured right after a scan's NVD/KEV enrichment pipeline
+-- finishes (see nvd.py's NvdEnrichmentCoordinator), so telemetry_changes()
+-- can compare two real points in time instead of comparing "now" to "now".
+-- Note EPSS refreshes on its own independent daily schedule (Layer 5) and
+-- is not re-snapshotted when it changes a score outside of a scan.
+CREATE TABLE IF NOT EXISTS asset_risk_snapshots (
+  snapshot_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  scan_id uuid NOT NULL REFERENCES scan_sessions(id) ON DELETE CASCADE,
+  asset_id uuid NOT NULL REFERENCES assets(asset_id) ON DELETE CASCADE,
+  risk_score numeric(5,2) NOT NULL,
+  risk_band varchar(12) NOT NULL,
+  captured_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (scan_id, asset_id)
+);
+CREATE INDEX IF NOT EXISTS idx_risk_snapshots_asset_time ON asset_risk_snapshots (asset_id, captured_at DESC);

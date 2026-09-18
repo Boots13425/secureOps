@@ -131,7 +131,8 @@ export default function KevIntelligence() {
                   <div className="flex items-center gap-2 flex-wrap mb-1.5">
                     <a href={`https://nvd.nist.gov/vuln/detail/${match.cve_id}`} target="_blank" rel="noreferrer" className="text-base font-semibold text-[var(--accent)] hover:underline inline-flex items-center gap-1">{match.cve_id}<ExternalLink size={13} /></a>
                     <span className="pill pill--danger inline-flex items-center gap-1"><Flame size={11} />Known Exploited</span>
-                    <ConfidencePill confidence={match.match_confidence === 'confirmed' ? 'high' : match.match_confidence} />
+                    {match.kev_known_ransomware_use && <span className="pill pill--danger">Ransomware use</span>}
+                    <ConfidencePill confidence={match.match_confidence} />
                   </div>
                   <div className="text-xs text-[var(--text-muted)]">{match.hostname || 'Unresolved asset'} · <span className="mono">{match.ip_address}</span> · {match.port}/{match.protocol} · {match.product || match.service_name || 'Unidentified product'} {match.version || ''}</div>
                 </div>

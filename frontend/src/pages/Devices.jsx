@@ -32,7 +32,7 @@ export default function Devices() {
           <Filter size={15} className="text-[var(--text-muted)]" />
           <select aria-label="Filter by asset status" value={status} onChange={(event) => setStatus(event.target.value)} className="bg-[var(--bg-surface)] border border-[var(--border)] rounded-[var(--radius-sm)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none">
             <option value="">All statuses</option>
-            {['unknown', 'known', 'approved', 'missing', 'offline'].map((value) => <option key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</option>)}
+            {['unknown', 'known', 'approved', 'missing'].map((value) => <option key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</option>)}
           </select>
           <select aria-label="Filter by device type" value={deviceType} onChange={(event) => setDeviceType(event.target.value)} className="bg-[var(--bg-surface)] border border-[var(--border)] rounded-[var(--radius-sm)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none">
             <option value="">All device types</option>

@@ -44,8 +44,18 @@ def find_asset_by_identifier(identifier):
       return asset
   return None
 
+def find_asset_by_identifier(identifier):
+    identifier = identifier.strip().lower()
+    sql = """
+      SELECT asset_id AS id, asset_id FROM assets
+      WHERE lower(hostname) = %s OR lower(host(ip_address)) = %s OR lower(mac_address::text) = %s
+      LIMIT 1
+    """
+    with connection() as conn: return _serialize(conn.execute(sql, (identifier, identifier, identifier)).fetchone())
+
+
 def update_asset(asset_id, values):
-    allowed = {key: value for key, value in values.items() if value is not None and key in {"status", "device_type", "criticality"}}
+    allowed = {key: value for key, value in values.items() if value is not None and key in {"status", "device_type", "criticality", "exposure"}}
     if not allowed: return None
     assignments = ", ".join(f"{key} = %s" for key in allowed)
     with connection() as conn:
@@ -107,6 +117,9 @@ def store_scan_results(session_id, subnet, hosts: list[HostObservation], record_
             existing = None
             if host.mac_address:
                 existing = conn.execute("SELECT * FROM assets WHERE mac_address=%s", (host.mac_address,)).fetchone()
+            if not existing and host.hostname:
+                # Project guide §4 step 3: MAC first, then stable hostname, then IP as a last resort.
+                existing = conn.execute("SELECT * FROM assets WHERE hostname=%s AND mac_address IS NULL", (host.hostname,)).fetchone()
             if not existing:
                 existing = conn.execute("SELECT * FROM assets WHERE ip_address=%s AND mac_address IS NULL", (host.ip_address,)).fetchone()
             if existing:
@@ -380,7 +393,7 @@ def list_kev_intelligence(status="active", query=None, scan_id=None):
     where = f"WHERE {' AND '.join(clauses)}"
     sql = f"""SELECT sv.service_vulnerability_id,sv.status,sv.match_confidence,sv.match_wording,
       v.cve_id,v.description,v.cvss_base_score,v.cvss_base_severity,
-      v.kev_date_added,v.kev_required_action,v.kev_due_date,
+      v.kev_date_added,v.kev_required_action,v.kev_due_date,v.kev_known_ransomware_use,
       s.asset_id,s.port,s.protocol,s.service_name,s.product,s.version,
       host(a.ip_address) AS ip_address,a.hostname,a.device_type,a.status AS asset_status
       FROM service_vulnerabilities sv
@@ -430,7 +443,7 @@ def telemetry_changes(to_scan_id=None, from_scan_id=None):
             latest = conn.execute("SELECT id FROM scan_sessions WHERE status='COMPLETED' ORDER BY started_at DESC LIMIT 1").fetchone()
             to_scan_id = latest["id"] if latest else None
         if not to_scan_id:
-            return {"to_scan": None, "from_scan": None, "baseline": False, "new_devices": [], "missing_devices": [], "port_changes": [], "config_changes": [], "finding_changes": []}
+            return {"to_scan": None, "from_scan": None, "baseline": False, "new_devices": [], "missing_devices": [], "port_changes": [], "config_changes": [], "finding_changes": [], "cve_changes": [], "risk_changes": []}
 
         if not from_scan_id:
             previous = conn.execute(
@@ -441,7 +454,7 @@ def telemetry_changes(to_scan_id=None, from_scan_id=None):
 
         to_scan = _serialize(conn.execute("SELECT id,started_at FROM scan_sessions WHERE id=%s", (to_scan_id,)).fetchone())
         if not from_scan_id:
-            return {"to_scan": to_scan, "from_scan": None, "baseline": True, "new_devices": [], "missing_devices": [], "port_changes": [], "config_changes": [], "finding_changes": []}
+            return {"to_scan": to_scan, "from_scan": None, "baseline": True, "new_devices": [], "missing_devices": [], "port_changes": [], "config_changes": [], "finding_changes": [], "cve_changes": [], "risk_changes": []}
         from_scan = _serialize(conn.execute("SELECT id,started_at FROM scan_sessions WHERE id=%s", (from_scan_id,)).fetchone())
 
         new_devices = [_serialize(row) for row in conn.execute("""
@@ -528,23 +541,85 @@ def telemetry_changes(to_scan_id=None, from_scan_id=None):
             AND NOT EXISTS (SELECT 1 FROM finding_observations fo WHERE fo.finding_id=f.finding_id AND fo.scan_id=%(to)s)
           ORDER BY hostname NULLS LAST""", {"to": to_scan_id, "from": from_scan_id}).fetchall()]
 
+        # NEW_CVE / CVE_RESOLVED (project guide §11). service_vulnerabilities
+        # isn't scan-scoped like asset_observations/finding_observations — a
+        # CVE match just has first_seen/status timestamps — so a match is
+        # counted as NEW_CVE if it first appeared in the window between the
+        # two scans' start times, and CVE_RESOLVED if it was marked
+        # resolved/dismissed in that same window (there is no automatic
+        # "NVD stopped returning this CVE" removal, so resolution is always
+        # the result of an explicit status change).
+        cve_changes = [_serialize(row) for row in conn.execute("""
+          SELECT sv.service_vulnerability_id,sv.cve_id,v.cvss_base_score,v.cvss_base_severity,
+            s.asset_id,host(a.ip_address) AS ip_address,a.hostname,'new' AS change
+          FROM service_vulnerabilities sv
+          JOIN vulnerabilities v ON v.cve_id=sv.cve_id
+          JOIN services s ON s.service_id=sv.service_id
+          JOIN assets a ON a.asset_id=s.asset_id
+          WHERE sv.first_seen > (SELECT started_at FROM scan_sessions WHERE id=%(from)s)
+            AND sv.first_seen <= (SELECT started_at FROM scan_sessions WHERE id=%(to)s)
+          UNION ALL
+          SELECT sv.service_vulnerability_id,sv.cve_id,v.cvss_base_score,v.cvss_base_severity,
+            s.asset_id,host(a.ip_address) AS ip_address,a.hostname,'resolved' AS change
+          FROM service_vulnerabilities sv
+          JOIN vulnerabilities v ON v.cve_id=sv.cve_id
+          JOIN services s ON s.service_id=sv.service_id
+          JOIN assets a ON a.asset_id=s.asset_id
+          WHERE sv.status IN ('resolved','dismissed')
+            AND sv.last_checked_at > (SELECT started_at FROM scan_sessions WHERE id=%(from)s)
+            AND sv.last_checked_at <= (SELECT started_at FROM scan_sessions WHERE id=%(to)s)
+          ORDER BY hostname NULLS LAST""", {"to": to_scan_id, "from": from_scan_id}).fetchall()]
+
+        # RISK_CHANGED (project guide §11) — the one event type that needs the
+        # asset_risk_snapshots table below, since it's a real diff between two
+        # points in time rather than something derivable from current state.
+        # Scans that predate the snapshot table (or a manual-only enrichment
+        # with no scan_id) simply won't have a row here, same as any other
+        # "not enough history yet" case elsewhere in this app.
+        risk_changes = [_serialize(row) for row in conn.execute("""
+          SELECT t.asset_id,host(a.ip_address) AS ip_address,a.hostname,
+            f.risk_band AS old_band,t.risk_band AS new_band,f.risk_score AS old_score,t.risk_score AS new_score
+          FROM asset_risk_snapshots t
+          JOIN asset_risk_snapshots f ON f.asset_id=t.asset_id AND f.scan_id=%(from)s
+          JOIN assets a ON a.asset_id=t.asset_id
+          WHERE t.scan_id=%(to)s AND t.risk_band IS DISTINCT FROM f.risk_band
+          ORDER BY hostname NULLS LAST""", {"to": to_scan_id, "from": from_scan_id}).fetchall()]
+
         return {"to_scan": to_scan, "from_scan": from_scan, "baseline": False,
                 "new_devices": new_devices, "missing_devices": missing_devices,
                 "port_changes": port_changes, "config_changes": config_changes,
-                "finding_changes": finding_changes}
+                "finding_changes": finding_changes, "cve_changes": cve_changes,
+                "risk_changes": risk_changes}
 
 
-# Layer 8 — combines severity (Layer 4), likelihood (Layer 5/6), exposure
-# (Layer 3 findings), and organizational criticality (set by a person, since
-# nothing in a scan can tell the system how much an asset matters) into one
-# 0-100 per-asset risk score. A confirmed KEV match always forces the band to
-# 'critical', matching the same real-world-exploitation-outranks-everything
-# rule used on the Vulnerabilities/EPSS/KEV pages.
+# Layer 8 — the ETSNTECH Asset Risk Index (EARI), project guide §12. Five
+# independently weighted 0-100 inputs, exactly as specified:
+#   0.30 severity (max CVSS of active CVEs, scaled x10)
+# + 0.20 exploit likelihood (max EPSS score, scaled x100)
+# + 0.20 known exploitation (100 if any active CVE is in CISA KEV, else 0)
+# + 0.15 network exposure (categorical, set by a person — §12.3 table)
+# + 0.15 asset criticality (categorical, set by a person — §12.4 table)
+# A confirmed KEV match enforces a minimum *score* of 80 (not just the band —
+# §12.2 "enforce a minimum priority score of 80"), which then naturally lands
+# in the High band (70-84) or above once the banding below is applied.
+#
+# Open findings (Layer 3) are NOT one of the five EARI inputs per the spec —
+# they are surfaced separately as finding_pressure_score, an auxiliary signal
+# used only for the human-readable "why" explanation, never for the score.
 #
 # Shared as one constant (rather than copy-pasted into telemetry_trend below)
 # so the risk trend line and the Risk Engine page can never silently drift
 # out of agreement with each other.
-_ASSET_RISK_SCORED_CTE = """
+_EXPOSURE_CASE = """CASE a.exposure
+  WHEN 'isolated_lab' THEN 20 WHEN 'management_segment' THEN 30 WHEN 'server_vlan' THEN 50
+  WHEN 'staff_network' THEN 65 WHEN 'guest_network' THEN 80 WHEN 'internet_facing' THEN 100
+  ELSE 65 END"""
+_CRITICALITY_CASE = """CASE a.criticality
+  WHEN 'test_temporary' THEN 20 WHEN 'peripheral' THEN 30 WHEN 'standard_workstation' THEN 50
+  WHEN 'privileged_workstation' THEN 70 WHEN 'business_server' THEN 85 WHEN 'critical_service' THEN 100
+  ELSE 50 END"""
+
+_ASSET_RISK_SCORED_CTE = f"""
   WITH vuln_agg AS (
     SELECT s.asset_id,
       max(v.cvss_base_score) AS max_cvss,
@@ -558,18 +633,24 @@ _ASSET_RISK_SCORED_CTE = """
     WHERE sv.status='active'
     GROUP BY s.asset_id
   ), finding_agg AS (
-    -- Weighted rather than a flat count: a critical finding should move the
-    -- needle more than several mediums combined, not count the same as a high.
+    -- Not a scoring input (see note above) — kept only to explain the score.
+    -- The four bool_or flags identify which §12.5 recommendation template(s)
+    -- apply, by the exact title findings.py assigns each Layer 3 finding type.
     SELECT asset_id,
       count(*) FILTER (WHERE severity='critical') AS critical_finding_count,
       count(*) FILTER (WHERE severity='high') AS high_finding_count,
       count(*) FILTER (WHERE severity='medium') AS medium_finding_count,
-      count(*) AS open_finding_count
+      count(*) AS open_finding_count,
+      bool_or(title = 'Legacy SMB protocol detected') AS has_smbv1_finding,
+      bool_or(title = 'Anonymous FTP access accepted') AS has_anon_ftp_finding,
+      bool_or(title = 'Remote Desktop service exposed') AS has_rdp_exposure_finding,
+      bool_or(title IN ('Expired TLS certificate detected','TLS certificate expires soon')) AS has_cert_finding
     FROM findings
     WHERE status='open'
     GROUP BY asset_id
   ), scored AS (
-    SELECT a.asset_id,host(a.ip_address) AS ip_address,a.hostname,a.device_type,a.status,a.criticality,
+    SELECT a.asset_id,host(a.ip_address) AS ip_address,a.hostname,a.device_type,a.status,
+      a.criticality,a.exposure,
       COALESCE(va.max_cvss,0) AS max_cvss,
       COALESCE(va.max_epss,0) AS max_epss,
       COALESCE(va.has_kev,false) AS has_kev,
@@ -578,19 +659,69 @@ _ASSET_RISK_SCORED_CTE = """
       COALESCE(fa.high_finding_count,0) AS high_finding_count,
       COALESCE(fa.medium_finding_count,0) AS medium_finding_count,
       COALESCE(fa.open_finding_count,0) AS open_finding_count,
-      LEAST(COALESCE(fa.critical_finding_count,0)*40 + COALESCE(fa.high_finding_count,0)*20 + COALESCE(fa.medium_finding_count,0)*5,100) AS exposure_score,
-      ROUND((
-        (COALESCE(va.max_cvss,0)/10.0*100)*0.35
-        + (CASE WHEN COALESCE(va.has_kev,false) THEN 100 ELSE COALESCE(va.max_epss,0)*100 END)*0.30
-        + LEAST(COALESCE(fa.critical_finding_count,0)*40 + COALESCE(fa.high_finding_count,0)*20 + COALESCE(fa.medium_finding_count,0)*5,100)*0.20
-        + (CASE a.criticality WHEN 'critical' THEN 100 WHEN 'high' THEN 75 WHEN 'low' THEN 25 ELSE 50 END)*0.15
-      )::numeric,1) AS risk_score
+      COALESCE(fa.has_smbv1_finding,false) AS has_smbv1_finding,
+      COALESCE(fa.has_anon_ftp_finding,false) AS has_anon_ftp_finding,
+      COALESCE(fa.has_rdp_exposure_finding,false) AS has_rdp_exposure_finding,
+      COALESCE(fa.has_cert_finding,false) AS has_cert_finding,
+      LEAST(COALESCE(fa.critical_finding_count,0)*40 + COALESCE(fa.high_finding_count,0)*20 + COALESCE(fa.medium_finding_count,0)*5,100) AS finding_pressure_score,
+      ROUND(COALESCE(va.max_cvss,0)/10.0*100,1) AS severity_normalized,
+      ROUND(COALESCE(va.max_epss,0)*100,1) AS epss_normalized,
+      (CASE WHEN COALESCE(va.has_kev,false) THEN 100 ELSE 0 END) AS kev_normalized,
+      ({_EXPOSURE_CASE}) AS exposure_normalized,
+      ({_CRITICALITY_CASE}) AS criticality_normalized,
+      GREATEST(
+        ROUND((
+          (COALESCE(va.max_cvss,0)/10.0*100)*0.30
+          + (COALESCE(va.max_epss,0)*100)*0.20
+          + (CASE WHEN COALESCE(va.has_kev,false) THEN 100 ELSE 0 END)*0.20
+          + ({_EXPOSURE_CASE})*0.15
+          + ({_CRITICALITY_CASE})*0.15
+        )::numeric,1),
+        CASE WHEN COALESCE(va.has_kev,false) THEN 80 ELSE 0 END
+      ) AS risk_score
     FROM assets a
     LEFT JOIN vuln_agg va ON va.asset_id=a.asset_id
     LEFT JOIN finding_agg fa ON fa.asset_id=a.asset_id
     WHERE a.status != 'missing'
   )
 """
+
+# Project guide §12.2 suggested labels — five bands, not four.
+_RISK_BAND_CASE = """CASE WHEN risk_score >= 85 THEN 'critical'
+  WHEN risk_score >= 70 THEN 'high'
+  WHEN risk_score >= 50 THEN 'elevated'
+  WHEN risk_score >= 30 THEN 'moderate'
+  ELSE 'low' END"""
+
+
+def _recommended_action(row):
+    """Rule-based recommendation engine, project guide §12.5 — deterministic,
+    no generative-AI dependency, one short template per condition. Every
+    condition the asset currently matches is combined into one action line,
+    same as the worked example in §13.2 ("validate/patch KEV vulnerability;
+    disable SMBv1; restrict RDP") rather than returning only the single
+    highest-priority driver."""
+    actions = []
+    if row["has_kev"]:
+        actions.append("prioritize vendor-supported remediation/mitigation; verify exposure and rescan after action")
+    if row["max_cvss"] >= 7 and row["max_epss"] >= 0.5:
+        actions.append("prioritize validation and vendor remediation because both impact and exploitation likelihood are elevated")
+    if row["has_smbv1_finding"]:
+        actions.append("disable SMBv1 after validating business dependencies, then rescan")
+    if row["has_anon_ftp_finding"]:
+        actions.append("disable anonymous FTP access unless explicitly required; restrict writable areas and network reachability")
+    if row["has_rdp_exposure_finding"]:
+        actions.append("restrict RDP to approved management sources/VPN and enforce strong authentication policy")
+    if row["has_cert_finding"]:
+        actions.append("renew/replace the certificate and verify service continuity")
+    if not actions and row["active_vuln_count"]:
+        actions.append("validate the matched CVEs against the actual deployed version, then plan remediation")
+    if not actions and (row["critical_finding_count"] or row["high_finding_count"]):
+        actions.append("review and remediate the open high-severity exposure findings on this asset, then rescan")
+    if not actions:
+        return "No urgent action required; continue routine monitoring."
+    combined = "; ".join(actions)
+    return combined[0].upper() + combined[1:] + "."
 
 
 def asset_risk_ranking():
@@ -655,6 +786,17 @@ def asset_risk_ranking():
         asset["priority_total"] = len(ranking)
     return ranking
 
+# Captures the current policy-driven ETSNTECH score for a scan snapshot.
+def snapshot_asset_risk(scan_id):
+    ranking = asset_risk_ranking()
+    with connection() as conn:
+        for row in ranking:
+            conn.execute("""INSERT INTO asset_risk_snapshots(scan_id,asset_id,risk_score,risk_band)
+              VALUES (%s,%s,%s,%s)
+              ON CONFLICT (scan_id,asset_id) DO UPDATE SET risk_score=EXCLUDED.risk_score,risk_band=EXCLUDED.risk_band,captured_at=now()""",
+              (scan_id, row["asset_id"], row["risk_score"], row["risk_band"]))
+    return len(ranking)
+
 
 # Now that Layer 8 exists, the trend uses assets' real current risk score
 # rather than a raw vulnerability count. Same caveat as the vulnerability-count
@@ -677,15 +819,23 @@ def telemetry_trend(limit=10):
         return [_serialize(row) for row in reversed(rows)]
 
 
+# Project guide §12.2: "This formula ... must be labelled 'ETSNTECH prototype
+# prioritization index'. Do not describe the result as the probability that
+# an organization will be breached." Carried in the API response so every
+# consumer (current UI and any future one) inherits the required wording.
+EARI_INDEX_LABEL = "ETSNTECH prototype prioritization index"
+
+
 def risk_summary():
     ranking = asset_risk_ranking()
     return {
+        "index_label": EARI_INDEX_LABEL,
         "assets_scored": len(ranking),
         "critical": sum(1 for r in ranking if r["risk_band"] == "critical"),
         "high": sum(1 for r in ranking if r["risk_band"] == "high"),
-    "elevated": sum(1 for r in ranking if r["label"] == "Elevated"),
-    "moderate": sum(1 for r in ranking if r["label"] == "Moderate"),
-    "medium": sum(1 for r in ranking if r["label"] in {"Elevated", "Moderate"}),
+      "elevated": sum(1 for r in ranking if r["label"] == "Elevated"),
+      "moderate": sum(1 for r in ranking if r["label"] == "Moderate"),
+      "medium": sum(1 for r in ranking if r["label"] in {"Elevated", "Moderate"}),
         "low": sum(1 for r in ranking if r["risk_band"] == "low"),
         "kev_matches": sum(1 for r in ranking if r["has_kev"]),
         "top_risk_asset": ranking[0] if ranking else None,

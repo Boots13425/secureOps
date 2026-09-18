@@ -68,7 +68,7 @@ export default function RiskEngine() {
     <div className="flex flex-col gap-5">
       <div>
         <h1 className="text-2xl font-semibold text-[var(--text-primary)]">Risk & interpretation engine</h1>
-        <p className="text-sm text-[var(--text-muted)]">ETSNTECH prototype prioritization index for each asset</p>
+        <p className="text-sm text-[var(--text-muted)]">{summary?.index_label || 'ETSNTECH prototype prioritization index'} — one score per asset, combining severity, likelihood, known exploitation, network exposure, and organizational criticality</p>
       </div>
 
       <div className="card border-[var(--accent-border)] bg-[linear-gradient(135deg,var(--accent-bg),var(--bg-surface))]">
@@ -77,7 +77,15 @@ export default function RiskEngine() {
           <div>
             <div className="text-sm font-semibold text-[var(--text-primary)]">How this score is built</div>
             <p className="text-xs text-[var(--text-secondary)] leading-relaxed mt-1">
-              The ETSNTECH prototype prioritization index combines severity, EPSS likelihood, KEV status, network exposure, and asset criticality. It is a prioritization index, not a probability or universal risk standard.
+              Each asset gets a 0-100 <strong>{summary?.index_label || 'ETSNTECH prototype prioritization index'}</strong>: <strong>severity</strong> (max
+              CVSS of its active CVEs x10, 30%) + <strong>exploit likelihood</strong> (max EPSS score x100, 20%) + <strong>known
+              exploitation</strong> (100 if any active CVE is in CISA KEV, else 0, 20%) + <strong>network exposure</strong> (which
+              segment it sits on, 15%) + <strong>asset criticality</strong> (how much it matters to your organization, 15%). Exposure and
+              criticality are set by you below — nothing in a scan can tell the system that a device is your internet-facing file server
+              rather than an isolated lab printer. A confirmed CISA KEV match always enforces a minimum score of 80, regardless of the
+              math, matching how KEV outranks everything else in this app. This is a prioritization heuristic, not a probability of
+              breach. Every asset also gets an explicit priority rank, so "single risk score and priority" is literal, not just an
+              implied sort order.
             </p>
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mt-4">
               <PolicyCard kind="criticality" title="Device criticality policy" description="CSV columns: device_identifier, criticality" />
@@ -105,7 +113,7 @@ export default function RiskEngine() {
                 <div>
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="pill pill--info">Priority #{a.priority_rank} of {a.priority_total}</span>
-                    <span className="text-base font-semibold text-[var(--text-primary)]">{a.hostname || 'Unknown'}</span>
+                    <span className="text-base font-semibold text-[var(--text-primary)]">{a.hostname || a.device_identifier || 'Unknown'}</span>
                     <span className={`pill ${BAND_TONE[a.risk_band] || 'pill--info'}`}>{a.label}</span>
                     {a.has_kev && <span className="pill pill--danger inline-flex items-center gap-1"><Flame size={11} />Known Exploited</span>}
                   </div>
@@ -122,7 +130,7 @@ export default function RiskEngine() {
                 <ScoreBar label="Max EPSS %" value={Math.round((a.max_epss || 0) * 100)} />
                 <ScoreBar label={`Exposure${a.exposure_unmapped ? ' (unmapped)' : ''}`} value={a.exposure} />
                 <div>
-                  <label className="block text-[10px] text-[var(--text-muted)] mb-0.5">Criticality (set by you)</label>
+                  <label className="block text-[10px] text-[var(--text-muted)] mb-0.5">Criticality (15%, set by you)</label>
                   <select
                     value={a.criticality}
                     onChange={(event) => updateCriticality.mutate({ assetId: a.asset_id, criticality: event.target.value })}
@@ -135,7 +143,10 @@ export default function RiskEngine() {
 
               <div className="flex justify-between mt-3 text-[11px] text-[var(--text-muted)]">
                 <span>{a.active_vuln_count} active CVE{a.active_vuln_count === 1 ? '' : 's'}</span>
-                <span>{a.open_finding_count} open finding{a.open_finding_count === 1 ? '' : 's'} ({a.critical_finding_count} critical, {a.high_finding_count} high, {a.medium_finding_count} medium)</span>
+                <span>{a.recommendations?.length || 0} recommendation{a.recommendations?.length === 1 ? '' : 's'}</span>
+              </div>
+              <div className="mt-3 pt-3 border-t border-[var(--border)] text-xs text-[var(--text-secondary)]">
+                <span className="font-medium text-[var(--text-primary)]">Recommendations: </span>{a.recommendations?.join(' ' ) || 'No urgent action required; continue routine monitoring.'}
               </div>
             </article>
           ))}

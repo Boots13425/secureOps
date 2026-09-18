@@ -1,7 +1,6 @@
+// Project guide §5.1's four organizational status values only — every
+// caller here passes an asset's `status` field, which never holds anything else.
 const STATUS_MAP = {
-  online: { cls: 'pill--ok', label: 'Online' },
-  offline: { cls: 'pill--danger', label: 'Offline' },
-  unmanaged: { cls: 'pill--warn', label: 'Unmanaged' },
   known: { cls: 'pill--info', label: 'Known' },
   unknown: { cls: 'pill--warn', label: 'Unknown' },
   approved: { cls: 'pill--ok', label: 'Approved' },

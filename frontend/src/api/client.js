@@ -219,6 +219,10 @@ export async function uploadRiskPolicy(endpoint, file) {
   return data
 }
 
+export async function uploadAssetCriticality(file) {
+  return uploadRiskPolicy('/assets/criticality/upload', file)
+}
+
 export async function getScanNetwork() {
   const { data } = await http.get('/scan/network')
   return data.data

@@ -24,19 +24,29 @@ import {
 import NextScanWidget from './NextScanWidget'
 
 const navItems = [
+  // Layer 1 — Asset discovery
   { to: '/', label: 'Dashboard', icon: LayoutDashboard, end: true },
   { to: '/devices', label: 'Devices', icon: HardDrive },
-  { to: '/services', label: 'Services & CPE', icon: ServerCog },
-  { to: '/findings', label: 'Exposure Findings', icon: ShieldAlert },
-  { to: '/vulnerabilities', label: 'Severity', icon: DatabaseZap },
-  { to: '/epss', label: 'Attack Likelihood', icon: TrendingUp },
-  { to: '/kev', label: 'Known Exploited', icon: Flame },
-  { to: '/telemetry', label: 'Changes & Trends', icon: GitCompare },
-  { to: '/risk', label: 'Risk Engine', icon: BrainCircuit },
-  { to: '/posture', label: 'Security Posture', icon: Target },
-  { to: '/history', label: 'History', icon: History },
   { to: '/discovery', label: 'Discovery / Scan', icon: ScanLine },
   { to: '/sessions', label: 'Scan Sessions', icon: Radar },
+  // Layer 2 — Services & CPE
+  { to: '/services', label: 'Services & CPE', icon: ServerCog },
+  // Layer 3 — Exposure findings
+  { to: '/findings', label: 'Exposure Findings', icon: ShieldAlert },
+  // Layer 4 — CVE intelligence
+  { to: '/vulnerabilities', label: 'Severity', icon: DatabaseZap },
+  // Layer 5 — EPSS probability
+  { to: '/epss', label: 'Attack Likelihood', icon: TrendingUp },
+  // Layer 6 — CISA KEV
+  { to: '/kev', label: 'Known Exploited', icon: Flame },
+  // Layer 7 — Change telemetry
+  { to: '/telemetry', label: 'Changes & Trends', icon: GitCompare },
+  // Layer 8 — Risk engine
+  { to: '/risk', label: 'Risk Engine', icon: BrainCircuit },
+  // Layer 9 — Security posture
+  { to: '/posture', label: 'Security Posture', icon: Target },
+  // Utility pages, not tied to a layer
+  { to: '/history', label: 'History', icon: History },
   { to: '/settings', label: 'Settings', icon: Settings },
 ]
 
