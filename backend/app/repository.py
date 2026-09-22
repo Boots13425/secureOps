@@ -742,7 +742,9 @@ def asset_risk_ranking():
                    JOIN services s ON s.service_id=sv.service_id
                    LEFT JOIN epss_current_scores e ON e.cve_id=v.cve_id
                    WHERE s.asset_id=a.asset_id AND sv.status='active'),'[]'::jsonb) AS vulnerabilities
-          FROM assets a WHERE a.status != 'missing'
+          FROM assets a
+          WHERE a.status != 'missing'
+            AND a.last_seen >= now() - interval '24 hours'
         """).fetchall()
         device_rows = conn.execute("SELECT device_identifier,criticality FROM device_criticality_policy").fetchall()
         network_rows = conn.execute("SELECT subnet_cidr::text,context_label FROM network_context_policy").fetchall()

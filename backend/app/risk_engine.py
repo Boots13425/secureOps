@@ -42,9 +42,21 @@ def policy_exposure(ip, policies):
     return NETWORK_CONTEXT_VALUES[selected["context_label"]], False, selected["context_label"]
 
 
+def _canonicalize_identifier(identifier):
+    if identifier is None:
+        return ""
+    value = str(identifier).strip().lower()
+    if not value:
+        return ""
+    value = value.replace("-", ":")
+    return value
+
+
 def policy_criticality(values, identifiers):
+    normalized_values = { _canonicalize_identifier(key): value for key, value in values.items() }
     for identifier in identifiers:
-        if identifier and (value := values.get(str(identifier).strip().lower())):
+        canon = _canonicalize_identifier(identifier)
+        if canon and (value := normalized_values.get(canon)):
             return CRITICALITY_VALUES[value], value
     return 50, "normal"
 

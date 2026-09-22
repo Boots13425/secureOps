@@ -22,6 +22,10 @@ class RiskEngineTests(unittest.TestCase):
         self.assertEqual(score, 80)
         self.assertEqual(label, "High")
 
+    def test_policy_criticality_normalizes_mac_delimiters(self):
+        values = {"00:11:22:33:44:55": "critical", "10.0.0.5": "low"}
+        self.assertEqual(policy_criticality(values, ["00-11-22-33-44-55", "10-0-0-5"]), (100, "critical"))
+
     def test_policy_defaults(self):
         self.assertEqual(policy_criticality({}, ("host", "10.0.0.1", None)), (50, "normal"))
         exposure, unmapped, context = policy_exposure("10.1.2.3", [{"network": ip_network("10.0.0.0/8"), "context_label": "Internet-facing/reachable"}])

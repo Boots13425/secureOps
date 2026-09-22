@@ -28,40 +28,21 @@ export default function RiskEngine() {
   const { data: summary, refetch: refetchSummary } = useRiskSummary()
   const updateCriticality = useUpdateCriticality()
 
-  const [files, setFiles] = useState({ criticality: null, network: null })
-  const [uploadStatus, setUploadStatus] = useState({ criticality: null, network: null })
+  const [networkFile, setNetworkFile] = useState(null)
+  const [uploadStatus, setUploadStatus] = useState(null)
 
-  async function handlePolicyUpload(kind) {
-    const file = files[kind]
-    if (!file) return
-    setUploadStatus((current) => ({ ...current, [kind]: { state: 'uploading', message: 'Uploading...' } }))
+  async function handleNetworkPolicyUpload() {
+    if (!networkFile) return
+    setUploadStatus({ state: 'uploading', message: 'Uploading network context policy...' })
     try {
-      const endpoint = kind === 'criticality' ? '/risk/policy/device-criticality' : '/risk/policy/network-context'
-      const data = await uploadRiskPolicy(endpoint, file)
+      const data = await uploadRiskPolicy('/risk/policy/network-context', networkFile)
       await Promise.all([refetchAssets(), refetchSummary()])
-      setUploadStatus((current) => ({ ...current, [kind]: { state: 'success', message: `${data.rows_uploaded} row(s) uploaded at ${new Date(data.updated_at).toLocaleString()}.` } }))
+      setUploadStatus({ state: 'success', message: `${data.rows_uploaded} row(s) uploaded at ${new Date(data.updated_at).toLocaleString()}.` })
     } catch (err) {
       const detail = err.response?.data?.detail
       const errors = detail?.errors?.map((item) => `Row ${item.row}: ${item.message}`).join(' ') || detail?.message || err.message
-      setUploadStatus((current) => ({ ...current, [kind]: { state: 'error', message: errors } }))
+      setUploadStatus({ state: 'error', message: errors })
     }
-  }
-
-  function PolicyCard({ kind, title, description }) {
-    const status = uploadStatus[kind]
-    return (
-      <div className="card border-[var(--border)] bg-[var(--bg-surface)] p-4">
-        <div className="text-sm font-semibold text-[var(--text-primary)] mb-1">{title}</div>
-        <p className="text-xs text-[var(--text-secondary)] mb-3">{description}</p>
-        <div className="flex items-center gap-3 flex-wrap">
-          <input type="file" accept=".csv" onChange={(event) => setFiles((current) => ({ ...current, [kind]: event.target.files[0] || null }))} className="text-xs text-[var(--text-secondary)]" />
-          <button type="button" onClick={() => handlePolicyUpload(kind)} disabled={!files[kind] || status?.state === 'uploading'} className="bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-white text-xs font-medium px-3 py-2 rounded-[var(--radius-sm)]">
-            {status?.state === 'uploading' ? 'Uploading...' : 'Upload policy'}
-          </button>
-        </div>
-        {status && <p role={status.state === 'error' ? 'alert' : undefined} className={`text-xs mt-2 ${status.state === 'error' ? 'text-[var(--danger)]' : 'text-[var(--text-primary)]'}`}>{status.message}</p>}
-      </div>
-    )
   }
 
   return (
@@ -87,9 +68,20 @@ export default function RiskEngine() {
               breach. Every asset also gets an explicit priority rank, so "single risk score and priority" is literal, not just an
               implied sort order.
             </p>
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 mt-4">
-              <PolicyCard kind="criticality" title="Device criticality policy" description="CSV columns: device_identifier, criticality" />
-              <PolicyCard kind="network" title="Network context policy" description="CSV columns: subnet_cidr, context_label, notes" />
+            <div className="card border-[var(--border)] bg-[var(--bg-surface)] p-4 mt-4">
+              <div className="text-sm font-semibold text-[var(--text-primary)] mb-1">Network context policy</div>
+              <p className="text-xs text-[var(--text-secondary)] mb-3">CSV columns: subnet_cidr, context_label, notes</p>
+              <div className="flex items-center gap-3 flex-wrap">
+                <label className="inline-flex items-center cursor-pointer bg-[var(--bg-surface-2)] border border-[var(--border)] hover:border-[var(--accent)] text-[var(--text-primary)] text-xs font-medium px-3 py-2 rounded-[var(--radius-sm)]">
+                  Choose CSV file
+                  <input type="file" accept=".csv,text/csv" className="sr-only" onChange={(event) => setNetworkFile(event.target.files?.[0] || null)} />
+                </label>
+                <span className="text-xs text-[var(--text-muted)] truncate max-w-64">{networkFile?.name || 'No file selected'}</span>
+                <button type="button" onClick={handleNetworkPolicyUpload} disabled={!networkFile || uploadStatus?.state === 'uploading'} className="bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-white text-xs font-medium px-3 py-2 rounded-[var(--radius-sm)]">
+                  {uploadStatus?.state === 'uploading' ? 'Uploading...' : 'Upload network policy'}
+                </button>
+              </div>
+              {uploadStatus && <p role={uploadStatus.state === 'error' ? 'alert' : undefined} className={`text-xs mt-2 ${uploadStatus.state === 'error' ? 'text-[var(--danger)]' : 'text-[var(--text-primary)]'}`}>{uploadStatus.message}</p>}
             </div>
           </div>
         </div>
