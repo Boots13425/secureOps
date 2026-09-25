@@ -82,7 +82,7 @@ def organization_risk_score(cvss_score, epss_score, confidence: str, device_type
     cvss = min(max(float(cvss_score or 0) / 10, 0), 1)
     epss = min(max(float(epss_score or 0), 0), 1)
     confidence_factor = {"confirmed": 1, "high": 0.9, "medium": 0.65, "low": 0.35}.get(confidence, 0.35)
-    type_factor = {"server": 1, "router": 1, "network device": 0.95, "printer": 0.8, "pc": 0.75, "phone": 0.6, "unknown": 0.7}.get((device_type or "unknown").lower(), 0.7)
+    type_factor = {"server": 1, "router": 1, "switch": 0.95, "network device": 0.95, "printer": 0.8, "pc": 0.75, "phone": 0.6, "unknown": 0.7}.get((device_type or "unknown").lower(), 0.7)
     status_factor = {"unknown": 1, "approved": 0.9, "known": 0.85, "missing": 0.6}.get((asset_status or "unknown").lower(), 0.8)
     asset_context = (type_factor + status_factor) / 2
     score = round((cvss * 50) + (epss * 35) + (confidence_factor * 10) + (asset_context * 5), 2)

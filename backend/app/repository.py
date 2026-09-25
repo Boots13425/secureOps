@@ -1,12 +1,14 @@
 import ipaddress
 from datetime import datetime, timezone
 from uuid import UUID
+from uuid import UUID as UUIDType
 from psycopg.types.json import Jsonb
 
 from .database import connection
 from .scanner import HostObservation
 from .findings import evaluate_host
-from .risk_engine import policy_exposure, policy_criticality, recommendations, score_asset
+from .risk_engine import CRITICALITY_LABELS, CRITICALITY_VALUES, CSV_CRITICALITY_MAP, _identifier_forms, policy_exposure, policy_criticality, recommendations, score_asset
+from .identification import AUTHORITATIVE_SOURCES, classify_device, confidence_for, source_rank
 
 
 def _serialize(row):
@@ -25,7 +27,9 @@ def list_assets(status=None, device_type=None, scan_id=None):
       SELECT a.asset_id AS id, a.asset_id, host(a.ip_address) AS ip,
              host(a.ip_address) AS ip_address, a.mac_address::text, a.vendor,
              a.hostname, a.device_type, a.os_family AS os_name, a.os_confidence,
-             CASE WHEN a.os_family IS NOT NULL THEN 'nmap' END AS os_source,
+             COALESCE(a.os_source, CASE WHEN a.os_family IS NOT NULL THEN 'nmap_heuristic' END) AS os_source,
+             a.hostname_source, a.vendor_source, a.device_type_source,
+             a.identification_provenance,
              a.status, a.first_seen, a.last_seen,
              (SELECT count(*) FROM services current_service WHERE current_service.asset_id=a.asset_id AND current_service.state='open') AS service_count,
              CASE WHEN EXISTS (SELECT 1 FROM asset_observations o WHERE o.asset_id=a.asset_id)
@@ -61,6 +65,115 @@ def update_asset(asset_id, values):
     with connection() as conn:
         row = conn.execute(f"UPDATE assets SET {assignments}, updated_at=now() WHERE asset_id=%s RETURNING asset_id AS id, *", [*allowed.values(), asset_id]).fetchone()
         return _serialize(row)
+
+def reclassify_stored_assets():
+    """Re-derive device_type for every stored asset from its OS/vendor evidence.
+
+    Assets already in the database were typed by the old port-only heuristic,
+    so a Cisco switch exposing SSH/HTTPS was recorded as a "server" and would
+    stay that way until its next scan. This replays the current classification
+    priority over the evidence each asset already has stored, so already-known
+    devices are corrected immediately.
+
+    Only a classification backed by OS/platform, sysServices or naming evidence
+    may overwrite an existing value; the port heuristic can never demote a
+    device on its own, and a value that already came from an authoritative
+    source is left alone.
+    """
+    with connection() as conn:
+        rows = conn.execute("""
+          SELECT a.asset_id, host(a.ip_address) AS ip_address, a.hostname, a.vendor,
+                 a.os_family, a.os_source, a.device_type, a.device_type_source,
+                 a.identification_provenance,
+                 COALESCE(ARRAY(SELECT DISTINCT s.service_name FROM services s
+                                 WHERE s.asset_id=a.asset_id AND s.state='open'
+                                   AND s.service_name IS NOT NULL), ARRAY[]::text[]) AS service_names
+            FROM assets a
+        """).fetchall()
+
+        corrections = []
+        for row in rows:
+            provenance = row.get("identification_provenance") or {}
+            signals = provenance.get("signals") or {}
+            result = classify_device(
+                os_family=row["os_family"],
+                sys_name=row["hostname"],
+                hostname=row["hostname"],
+                vendor=row["vendor"],
+                sys_services=(signals.get("sys_services") or {}).get("value"),
+                service_names=row["service_names"] or (),
+            )
+            current, current_source = row["device_type"], row["device_type_source"]
+            if result.device_type == current or result.device_type == "unknown":
+                continue
+            if result.source == "service_heuristic":
+                continue
+            if current_source in AUTHORITATIVE_SOURCES:
+                continue
+            provenance = dict(provenance)
+            type_provenance = dict(provenance.get("device_type") or {})
+            type_provenance["candidates"] = {
+                **(type_provenance.get("candidates") or {}),
+                result.source: result.device_type,
+            }
+            type_provenance.update({
+                "value": result.device_type,
+                "source": result.source,
+                "confidence": confidence_for(result.source),
+                "detail": result.detail,
+            })
+            provenance["device_type"] = type_provenance
+            conn.execute("""UPDATE assets SET device_type=%s, device_type_source=%s,
+                              identification_provenance=%s, updated_at=now()
+                            WHERE asset_id=%s""",
+                         (result.device_type, result.source, Jsonb(provenance), row["asset_id"]))
+            corrections.append({
+                "ip_address": row["ip_address"], "hostname": row["hostname"],
+                "from": current, "to": result.device_type, "source": result.source,
+            })
+
+        if corrections:
+            conn.execute("""INSERT INTO scan_activity(event_type,message,detail) VALUES (%s,%s,%s)""",
+                         ("ASSET_RECLASSIFIED", f"{len(corrections)} asset(s) reclassified from OS/vendor evidence",
+                          "; ".join(f"{item['ip_address']} · {item['hostname'] or 'unresolved'}: {item['from']} → {item['to']} ({item['source']})"
+                                    for item in corrections[:25])))
+    return corrections
+
+
+def set_manual_criticality(asset_id, criticality):
+  # Precedence is manual override > CSV bulk policy > standard workstation default.
+    with connection() as conn:
+        row = conn.execute("""
+          UPDATE assets SET manual_criticality=%s, updated_at=now()
+          WHERE asset_id=%s AND status != 'missing'
+          RETURNING asset_id
+        """, (criticality, asset_id)).fetchone()
+    if not row:
+        return None
+    return next((asset for asset in asset_risk_ranking() if str(asset["asset_id"]) == str(asset_id)), None)
+
+def find_current_asset_identifier(identifier):
+    try:
+        UUIDType(str(identifier))
+    except ValueError:
+        pass
+    else:
+        with connection() as conn:
+            row = conn.execute("SELECT asset_id FROM assets WHERE asset_id=%s AND status != 'missing'", (identifier,)).fetchone()
+        if row:
+            return str(row["asset_id"])
+    asset = find_asset_by_identifier(identifier)
+    return str(asset["asset_id"]) if asset else None
+
+
+def set_csv_criticality(asset_id, criticality):
+    with connection() as conn:
+        row = conn.execute("""
+          UPDATE assets SET csv_criticality=%s, updated_at=now()
+          WHERE asset_id=%s
+          RETURNING asset_id
+        """, (criticality, asset_id)).fetchone()
+    return bool(row)
 
 def save_device_criticality_policy(rows):
     with connection() as conn:
@@ -122,15 +235,95 @@ def store_scan_results(session_id, subnet, hosts: list[HostObservation], record_
                 existing = conn.execute("SELECT * FROM assets WHERE hostname=%s AND mac_address IS NULL", (host.hostname,)).fetchone()
             if not existing:
                 existing = conn.execute("SELECT * FROM assets WHERE ip_address=%s AND mac_address IS NULL", (host.ip_address,)).fetchone()
+            # Requirement 2: Cross-segment MAC/vendor visibility via SNMP ARP tables.
+            # If this host has no Layer-2 MAC from direct ARP, check if an SNMP router
+            # or switch previously reported an ARP mapping for this IP.
+            if not host.mac_address:
+                snmp_mac_row = conn.execute(
+                    "SELECT mac_address::text FROM snmp_mac_ip_observations WHERE ip_address=%s ORDER BY last_seen DESC LIMIT 1",
+                    (host.ip_address,)
+                ).fetchone()
+                if snmp_mac_row and snmp_mac_row.get("mac_address"):
+                    host.mac_address = snmp_mac_row["mac_address"]
+                    if not existing:
+                        existing = conn.execute("SELECT * FROM assets WHERE mac_address=%s", (host.mac_address,)).fetchone()
+
             if existing:
                 next_status = existing["status"] if existing["status"] in {"approved", "unknown", "known"} else "known"
-                asset = conn.execute("""UPDATE assets SET ip_address=%s, mac_address=COALESCE(%s,mac_address), vendor=COALESCE(%s,vendor), hostname=COALESCE(%s,hostname),
-                  device_type=CASE WHEN %s='unknown' THEN device_type ELSE %s END, os_family=COALESCE(%s,os_family), os_confidence=COALESCE(%s,os_confidence), status=%s, last_seen=%s, updated_at=now()
-                  WHERE asset_id=%s RETURNING *""", (host.ip_address,host.mac_address,host.vendor,host.hostname,host.device_type,host.device_type,host.os_family,host.os_confidence,next_status,observed_at,existing["asset_id"])).fetchone()
+
+                # Requirement 6: Confidence-tagged field merging.
+                # Never silently overwrite a higher-confidence existing value with a lower-confidence guess.
+                # Only overwrite if the new candidate source has equal or higher priority (lower or equal source_rank),
+                # or if the existing field is empty.
+                def choose_field(current_val, current_source, new_val, new_source):
+                    if not new_val or new_val == "unknown":
+                        return current_val, current_source
+                    if not current_val or current_val == "unknown":
+                        return new_val, new_source or "nmap_heuristic"
+                    curr_rank = source_rank(current_source or "nmap_heuristic")
+                    new_rank = source_rank(new_source or "nmap_heuristic")
+                    if new_rank <= curr_rank:
+                        return new_val, new_source or "nmap_heuristic"
+                    return current_val, current_source
+
+                final_hostname, final_h_src = choose_field(
+                    existing.get("hostname"), existing.get("hostname_source"),
+                    host.hostname, host.hostname_source,
+                )
+                final_vendor, final_v_src = choose_field(
+                    existing.get("vendor"), existing.get("vendor_source"),
+                    host.vendor, host.vendor_source,
+                )
+                final_os, final_os_src = choose_field(
+                    existing.get("os_family"), existing.get("os_source"),
+                    host.os_family, host.os_source,
+                )
+                final_dtype, final_dtype_src = choose_field(
+                    existing.get("device_type"), existing.get("device_type_source"),
+                    host.device_type, host.device_type_source,
+                )
+                final_os_conf = host.os_confidence if final_os == host.os_family and host.os_confidence is not None else existing.get("os_confidence")
+
+                # Merge provenance maps
+                merged_prov = dict(existing.get("identification_provenance") or {})
+                if host.identification_provenance:
+                    merged_prov.update(host.identification_provenance)
+
+                asset = conn.execute("""UPDATE assets SET
+                  ip_address=%s, mac_address=COALESCE(%s, mac_address),
+                  hostname=%s, hostname_source=%s,
+                  vendor=%s, vendor_source=%s,
+                  os_family=%s, os_source=%s, os_confidence=%s,
+                  device_type=%s, device_type_source=%s,
+                  identification_provenance=%s,
+                  status=%s, last_seen=%s, updated_at=now()
+                  WHERE asset_id=%s RETURNING *""", (
+                    host.ip_address, host.mac_address,
+                    final_hostname, final_h_src,
+                    final_vendor, final_v_src,
+                    final_os, final_os_src, final_os_conf,
+                    final_dtype or "unknown", final_dtype_src,
+                    Jsonb(merged_prov) if merged_prov else None,
+                    next_status, observed_at, existing["asset_id"]
+                )).fetchone()
                 event_type, message = "ASSET_UPDATED", "Known asset observed"
             else:
-                asset = conn.execute("""INSERT INTO assets(ip_address,mac_address,vendor,hostname,device_type,os_family,os_confidence,status,first_seen,last_seen)
-                  VALUES (%s,%s,%s,%s,%s,%s,%s,'unknown',%s,%s) RETURNING *""", (host.ip_address,host.mac_address,host.vendor,host.hostname,host.device_type,host.os_family,host.os_confidence,observed_at,observed_at)).fetchone()
+                asset = conn.execute("""INSERT INTO assets(
+                  ip_address, mac_address, vendor, vendor_source,
+                  hostname, hostname_source,
+                  device_type, device_type_source,
+                  os_family, os_source, os_confidence,
+                  identification_provenance, status, first_seen, last_seen
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,'unknown',%s,%s) RETURNING *""", (
+                    host.ip_address, host.mac_address,
+                    host.vendor, host.vendor_source or ("nmap_heuristic" if host.vendor else None),
+                    host.hostname, host.hostname_source or ("nmap_heuristic" if host.hostname else None),
+                    host.device_type or "unknown", host.device_type_source or ("nmap_heuristic" if host.device_type != "unknown" else None),
+                    host.os_family, host.os_source or ("nmap_heuristic" if host.os_family else None),
+                    host.os_confidence,
+                    Jsonb(host.identification_provenance) if host.identification_provenance else None,
+                    observed_at, observed_at
+                )).fetchone()
                 event_type, message = "ASSET_DISCOVERED", "New unknown asset discovered"
                 host.is_new_asset = True
             host.asset_id = str(asset["asset_id"])
@@ -280,12 +473,13 @@ def list_findings(status=None, severity=None, confidence=None, check_id=None, qu
 
 def findings_summary():
     with connection() as conn:
-        return _serialize(conn.execute("""SELECT count(*) FILTER (WHERE status='open') AS open,
-          count(*) FILTER (WHERE status='open' AND severity='critical') AS critical,
-          count(*) FILTER (WHERE status='open' AND severity='high') AS high,
-          count(*) FILTER (WHERE status='open' AND severity='medium') AS medium,
-          count(DISTINCT asset_id) FILTER (WHERE status='open') AS affected_assets
-          FROM findings""").fetchone())
+        return _serialize(conn.execute("""SELECT count(*) FILTER (WHERE f.status='open') AS open,
+          count(*) FILTER (WHERE f.status='open' AND f.severity='critical') AS critical,
+          count(*) FILTER (WHERE f.status='open' AND f.severity='high') AS high,
+          count(*) FILTER (WHERE f.status='open' AND f.severity='medium') AS medium,
+          count(DISTINCT f.asset_id) FILTER (WHERE f.status='open') AS affected_assets
+          FROM findings f JOIN assets a ON a.asset_id=f.asset_id
+          WHERE a.status != 'missing' AND a.last_seen >= now() - interval '24 hours'""").fetchone())
 
 
 def update_finding_status(finding_id, status):
@@ -409,13 +603,14 @@ def list_kev_intelligence(status="active", query=None, scan_id=None):
 def kev_summary():
     with connection() as conn:
         return _serialize(conn.execute("""SELECT
-          count(*) FILTER (WHERE sv.status='active') AS active_matches,
-          count(DISTINCT s.asset_id) FILTER (WHERE sv.status='active') AS affected_assets,
-          count(*) FILTER (WHERE sv.status='active' AND v.kev_due_date IS NOT NULL AND v.kev_due_date <= current_date + interval '14 days') AS due_soon,
-          count(DISTINCT v.cve_id) FILTER (WHERE sv.status='active') AS distinct_cves
+          count(*) FILTER (WHERE sv.status='active' AND a.status != 'missing' AND a.last_seen >= now() - interval '24 hours') AS active_matches,
+          count(DISTINCT s.asset_id) FILTER (WHERE sv.status='active' AND a.status != 'missing' AND a.last_seen >= now() - interval '24 hours') AS affected_assets,
+          count(*) FILTER (WHERE sv.status='active' AND a.status != 'missing' AND a.last_seen >= now() - interval '24 hours' AND v.kev_due_date IS NOT NULL AND v.kev_due_date <= current_date + interval '14 days') AS due_soon,
+          count(DISTINCT v.cve_id) FILTER (WHERE sv.status='active' AND a.status != 'missing' AND a.last_seen >= now() - interval '24 hours') AS distinct_cves
           FROM service_vulnerabilities sv
           JOIN vulnerabilities v ON v.cve_id=sv.cve_id
           JOIN services s ON s.service_id=sv.service_id
+          JOIN assets a ON a.asset_id=s.asset_id
           WHERE v.kev_flag = true""").fetchone())
 
 
@@ -724,11 +919,11 @@ def _recommended_action(row):
     return combined[0].upper() + combined[1:] + "."
 
 
-def asset_risk_ranking():
+def _calculate_asset_ranking():
     with connection() as conn:
         assets = conn.execute("""
           SELECT a.asset_id,host(a.ip_address) AS ip_address,a.hostname,a.mac_address::text,
-                 a.device_type,a.status,
+                 a.device_type,a.status,a.manual_criticality,a.csv_criticality,
                  COALESCE((SELECT jsonb_agg(jsonb_build_object('port',s.port,'protocol',s.protocol,
                    'name',s.service_name,'product',s.product,'version',s.version))
                    FROM services s WHERE s.asset_id=a.asset_id AND s.state='open'),'[]'::jsonb) AS services,
@@ -758,9 +953,22 @@ def asset_risk_ranking():
         epss = max((float(item.get("epss") or 0) for item in vulnerabilities), default=0) * 100
         kev = 100 if any(item.get("kev") for item in vulnerabilities) else 0
         exposure, unmapped, context_label = policy_exposure(asset["ip_address"], network_policy)
-        criticality, criticality_label = policy_criticality(
+        if asset["manual_criticality"]:
+          criticality_label = asset["manual_criticality"]
+          criticality = CRITICALITY_VALUES[criticality_label]
+          criticality_source = "manual"
+        elif asset["csv_criticality"]:
+          criticality_label = asset["csv_criticality"]
+          criticality = CRITICALITY_VALUES[criticality_label]
+          criticality_source = "csv"
+        else:
+          criticality, criticality_label = policy_criticality(
             device_policy, (asset["hostname"], asset["ip_address"], asset["mac_address"])
-        )
+          )
+          criticality_source = "csv" if any(
+            identifier and any(identifier.strip().lower() == key for key in device_policy)
+            for identifier in (asset["hostname"], asset["ip_address"], asset["mac_address"])
+          ) else "default"
         scored = {
             **_serialize(asset),
             "device_identifier": asset["hostname"] or asset["ip_address"],
@@ -772,6 +980,8 @@ def asset_risk_ranking():
             "exposure_context": context_label,
             "asset_criticality": criticality,
             "criticality": criticality_label,
+            "criticality_source": criticality_source,
+            "criticality_label": CRITICALITY_LABELS[criticality_label],
         }
         score, label = score_asset(severity, epss, kev, exposure, criticality)
         scored.update({"score": score, "label": label, "risk_score": score, "risk_band": label.lower()})
@@ -787,6 +997,121 @@ def asset_risk_ranking():
         asset["priority_rank"] = index
         asset["priority_total"] = len(ranking)
     return ranking
+
+
+def risk_readiness():
+    # Readiness only reports status — it does not score anything. An asset's
+    # criticality counts as "set" when it carries a manual override, a value
+    # applied by the Device Criticality CSV upload, or an identifier match in
+    # the device criticality policy table. The policy match reuses the scoring
+    # engine's identifier canonicalization (MAC/IP delimiter variants) so that
+    # readiness can never claim criticality is missing for an asset the risk
+    # engine would in fact score with a CSV-provided category.
+    with connection() as conn:
+        network_uploaded = conn.execute("SELECT EXISTS (SELECT 1 FROM network_context_policy) AS uploaded").fetchone()["uploaded"]
+        assets = conn.execute("""
+          SELECT COALESCE(NULLIF(a.hostname, ''), host(a.ip_address)) AS device_identifier,
+                 a.hostname,
+                 host(a.ip_address) AS ip_address,
+                 a.mac_address::text AS mac_address,
+                 a.manual_criticality,
+                 a.csv_criticality
+          FROM assets a
+          WHERE a.status != 'missing'
+            AND a.last_seen >= now() - interval '24 hours'
+          ORDER BY device_identifier NULLS LAST
+        """).fetchall()
+        policy_rows = conn.execute("SELECT device_identifier FROM device_criticality_policy").fetchall()
+    policy_forms = {form for row in policy_rows for form in _identifier_forms(row["device_identifier"])}
+    missing = []
+    for asset in assets:
+        if asset["manual_criticality"] or asset["csv_criticality"]:
+            continue
+        identifiers = (asset["hostname"], asset["ip_address"], asset["mac_address"])
+        if any(form in policy_forms for identifier in identifiers for form in _identifier_forms(identifier)):
+            continue
+        missing.append(asset["device_identifier"])
+    total_active_assets = len(assets)
+    return {
+        "network_context_uploaded": bool(network_uploaded),
+        "total_active_assets": total_active_assets,
+        "assets_with_criticality_set": total_active_assets - len(missing),
+        "assets_missing_criticality": missing,
+        "ready_to_rank": bool(network_uploaded and not missing),
+    }
+
+
+def _current_asset_view(ranking=None):
+    ranking_by_id = {str(row["asset_id"]): row for row in (ranking or [])}
+    with connection() as conn:
+        rows = conn.execute("""
+          SELECT a.asset_id, host(a.ip_address) AS ip_address, a.hostname, a.device_type,
+            a.status, a.manual_criticality, a.csv_criticality
+          FROM assets a
+          WHERE a.status != 'missing' AND a.last_seen >= now() - interval '24 hours'
+          ORDER BY a.hostname NULLS LAST, a.ip_address
+        """).fetchall()
+    result = []
+    for row in rows:
+        saved = ranking_by_id.get(str(row["asset_id"]))
+        if saved:
+            result.append(saved)
+            continue
+        result.append({
+            **_serialize(row),
+            "device_identifier": row["hostname"] or row["ip_address"],
+            "criticality": row["manual_criticality"] or row["csv_criticality"],
+            "risk_score": None, "score": None, "label": None, "risk_band": None,
+            "priority_rank": None, "priority_total": None, "ranking_status": "not_yet_ranked",
+        })
+    # The SQL above is only an alphabetical seed; the stored ranking is a JSONB
+    # blob so it cannot be ORDER BY'd in SQL. Ranked assets must be presented in
+    # their assigned priority order (rank 1 = highest score first), so sort by the
+    # stored priority_rank ascending and push any not-yet-ranked assets to the end.
+    ranked = [item for item in result if item.get("priority_rank") is not None]
+    unranked = [item for item in result if item.get("priority_rank") is None]
+    ranked.sort(key=lambda item: item["priority_rank"])
+    unranked.sort(key=lambda item: item.get("device_identifier") or "")
+    return ranked + unranked
+
+
+def get_current_ranking():
+    with connection() as conn:
+        state = conn.execute("SELECT ranked_at,ranking FROM risk_ranking_state WHERE state_id=1").fetchone()
+    ranking = state["ranking"] if state else []
+    return {
+        "ranked_at": _serialize(state)["ranked_at"] if state else None,
+        "ranking_stale": bool(state and _ranking_is_stale(state["ranked_at"])),
+        "assets": _current_asset_view(ranking),
+    }
+
+
+def _ranking_is_stale(ranked_at):
+    with connection() as conn:
+        row = conn.execute("""
+          SELECT GREATEST(
+            COALESCE((SELECT max(last_seen) FROM assets), '-infinity'::timestamptz),
+            COALESCE((SELECT max(updated_at) FROM assets), '-infinity'::timestamptz),
+            COALESCE((SELECT max(updated_at) FROM network_context_policy), '-infinity'::timestamptz),
+            COALESCE((SELECT max(updated_at) FROM device_criticality_policy), '-infinity'::timestamptz)
+          ) > %s AS stale
+        """, (ranked_at,)).fetchone()
+    return bool(row["stale"])
+
+
+def calculate_and_store_ranking():
+    ranking = _calculate_asset_ranking()
+    ranked_at = datetime.now(timezone.utc)
+    with connection() as conn:
+        conn.execute("""INSERT INTO risk_ranking_state(state_id,ranked_at,ranking)
+          VALUES (1,%s,%s)
+          ON CONFLICT (state_id) DO UPDATE SET ranked_at=EXCLUDED.ranked_at,ranking=EXCLUDED.ranking""",
+          (ranked_at, Jsonb(ranking)))
+    return {"ranked_at": ranked_at, "assets": ranking}
+
+
+def asset_risk_ranking():
+    return get_current_ranking()["assets"]
 
 # Captures the current policy-driven ETSNTECH score for a scan snapshot.
 def snapshot_asset_risk(scan_id):
@@ -829,16 +1154,34 @@ EARI_INDEX_LABEL = "ETSNTECH prototype prioritization index"
 
 
 def risk_summary():
-    ranking = asset_risk_ranking()
+    current = get_current_ranking()
+    ranking = [row for row in current["assets"] if row.get("risk_score") is not None]
     return {
         "index_label": EARI_INDEX_LABEL,
         "assets_scored": len(ranking),
         "critical": sum(1 for r in ranking if r["risk_band"] == "critical"),
         "high": sum(1 for r in ranking if r["risk_band"] == "high"),
-      "elevated": sum(1 for r in ranking if r["label"] == "Elevated"),
-      "moderate": sum(1 for r in ranking if r["label"] == "Moderate"),
-      "medium": sum(1 for r in ranking if r["label"] in {"Elevated", "Moderate"}),
+        "elevated": sum(1 for r in ranking if r["label"] == "Elevated"),
+        "moderate": sum(1 for r in ranking if r["label"] == "Moderate"),
+        "medium": sum(1 for r in ranking if r["label"] in {"Elevated", "Moderate"}),
         "low": sum(1 for r in ranking if r["risk_band"] == "low"),
         "kev_matches": sum(1 for r in ranking if r["has_kev"]),
         "top_risk_asset": ranking[0] if ranking else None,
+        "data_freshness": risk_data_freshness(),
+        "ranked_at": current["ranked_at"],
+        "ranking_stale": current["ranking_stale"],
     }
+
+
+def risk_data_freshness():
+    """Return source timestamps used by the Layer 8 score and Layer 9 copy."""
+    with connection() as conn:
+        row = conn.execute("""
+          SELECT
+            (SELECT max(nvd_last_refreshed_at) FROM vulnerabilities) AS nvd_last_refreshed_at,
+            (SELECT max(last_refreshed_at) FROM nvd_cpe_cache) AS nvd_cache_last_refreshed_at,
+            (SELECT max(finished_at) FROM epss_download_runs WHERE status='completed') AS epss_last_completed_at,
+            (SELECT max(updated_at) FROM epss_current_scores) AS epss_last_updated_at,
+            (SELECT max(finished_at) FROM kev_refresh_runs WHERE status='completed') AS kev_last_completed_at
+        """).fetchone()
+        return _serialize(row)

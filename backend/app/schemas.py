@@ -4,7 +4,7 @@ from pydantic import BaseModel, Field
 
 
 AssetStatus = Literal["known", "unknown", "approved", "missing"]
-DeviceType = Literal["PC", "server", "router", "printer", "phone", "unknown"]
+DeviceType = Literal["PC", "server", "router", "switch", "network device", "printer", "phone", "unknown"]
 # Project guide §12.4 — organizational value of the asset.
 AssetCriticality = Literal[
     "test_temporary", "peripheral", "standard_workstation",
@@ -27,6 +27,10 @@ class AssetUpdate(BaseModel):
     device_type: DeviceType | None = None
     criticality: AssetCriticality | None = None
     exposure: AssetExposure | None = None
+
+
+class CriticalityUpdate(BaseModel):
+    criticality_category: str
 
 
 class FindingUpdate(BaseModel):

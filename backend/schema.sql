@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS assets (
   mac_address macaddr,
   vendor text,
   hostname text,
-  device_type varchar(16) NOT NULL DEFAULT 'unknown' CHECK (device_type IN ('PC','server','router','printer','phone','unknown')),
+  device_type varchar(16) NOT NULL DEFAULT 'unknown' CHECK (device_type IN ('PC','server','router','switch','printer','phone','unknown')),
   os_family text,
   os_confidence numeric(4,3) CHECK (os_confidence BETWEEN 0 AND 1),
   status varchar(16) NOT NULL DEFAULT 'unknown' CHECK (status IN ('known','unknown','approved','missing')),
@@ -28,6 +28,15 @@ CREATE TABLE IF NOT EXISTS assets (
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+-- Network-infrastructure classification. A switch was previously folded into
+-- 'router' and an infrastructure device whose OS could not separate the two
+-- had nowhere honest to go, so both ended up mislabelled 'server' purely for
+-- exposing SSH/HTTPS. Widen the constraint rather than keep guessing: 'switch'
+-- and 'network device' are first-class values now (see identification.classify_device).
+ALTER TABLE assets DROP CONSTRAINT IF EXISTS assets_device_type_check;
+ALTER TABLE assets ADD CONSTRAINT assets_device_type_check CHECK (device_type IN
+  ('PC','server','router','switch','network device','printer','phone','unknown'));
+
 -- Layer 8: nothing in a network scan can tell the system how much an asset
 -- matters to the organization — that has to come from a person. Defaults to
 -- 'normal' so untagged assets don't silently skew the risk ranking.
@@ -47,6 +56,10 @@ UPDATE assets SET criticality = CASE criticality
 ALTER TABLE assets ALTER COLUMN criticality SET DEFAULT 'standard_workstation';
 ALTER TABLE assets ADD CONSTRAINT assets_criticality_check CHECK (criticality IN
   ('test_temporary','peripheral','standard_workstation','privileged_workstation','business_server','critical_service'));
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS csv_criticality varchar(24)
+  CHECK (csv_criticality IN ('test_temporary','peripheral','standard_workstation','privileged_workstation','business_server','critical_service'));
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS manual_criticality varchar(24)
+  CHECK (manual_criticality IN ('test_temporary','peripheral','standard_workstation','privileged_workstation','business_server','critical_service'));
 
 -- Network exposure context (isolated lab vs. internet-facing, etc.) is the
 -- other organizational input the EARI formula needs and nothing in a scan
@@ -55,6 +68,31 @@ ALTER TABLE assets ADD COLUMN IF NOT EXISTS exposure varchar(24) NOT NULL DEFAUL
 ALTER TABLE assets DROP CONSTRAINT IF EXISTS assets_exposure_check;
 ALTER TABLE assets ADD CONSTRAINT assets_exposure_check CHECK (exposure IN
   ('isolated_lab','management_segment','server_vlan','staff_network','guest_network','internet_facing'));
+
+-- Layer 1 accuracy: tag each inferred/authoritative field with the source that
+-- supplied it (snmp, dhcp_lease, reverse_dns, netbios, mdns, nmap_heuristic),
+-- plus a free-form JSONB provenance map so administrators can see all candidates
+-- and understand why a field has its current value instead of a blind guess.
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS hostname_source varchar(32);
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS vendor_source varchar(32);
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS os_source varchar(32);
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS device_type_source varchar(32);
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS identification_provenance jsonb;
+
+-- MAC-to-IP observations learned from SNMP ARP tables on routers/switches.
+-- Enables cross-segment MAC/vendor visibility and dedupe even when the scanner
+-- has no direct Layer-2 presence on that broadcast domain.
+CREATE TABLE IF NOT EXISTS snmp_mac_ip_observations (
+  observation_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  ip_address inet NOT NULL,
+  mac_address macaddr NOT NULL,
+  learned_from_ip inet NOT NULL,
+  first_seen timestamptz NOT NULL DEFAULT now(),
+  last_seen timestamptz NOT NULL DEFAULT now(),
+  CONSTRAINT uq_snmp_mac_ip UNIQUE (ip_address, mac_address, learned_from_ip)
+);
+CREATE INDEX IF NOT EXISTS idx_snmp_mac_ip_ip ON snmp_mac_ip_observations(ip_address);
+CREATE INDEX IF NOT EXISTS idx_snmp_mac_ip_mac ON snmp_mac_ip_observations(mac_address);
 CREATE UNIQUE INDEX IF NOT EXISTS uq_assets_mac ON assets (mac_address) WHERE mac_address IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_assets_ip ON assets (ip_address);
 
@@ -394,3 +432,11 @@ CREATE TABLE IF NOT EXISTS asset_risk_snapshots (
   UNIQUE (scan_id, asset_id)
 );
 CREATE INDEX IF NOT EXISTS idx_risk_snapshots_asset_time ON asset_risk_snapshots (asset_id, captured_at DESC);
+
+-- Layer 8 current ranking is administrator-triggered. Keep the latest complete
+-- result separate from historical scan snapshots so reads never recalculate.
+CREATE TABLE IF NOT EXISTS risk_ranking_state (
+  state_id smallint PRIMARY KEY CHECK (state_id = 1),
+  ranked_at timestamptz NOT NULL,
+  ranking jsonb NOT NULL
+);

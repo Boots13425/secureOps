@@ -1,9 +1,39 @@
 from __future__ import annotations
 
 from ipaddress import ip_address, ip_network
+import re
 
 
-CRITICALITY_VALUES = {"low": 20, "normal": 50, "high": 70, "critical": 100}
+CRITICALITY_VALUES = {
+    "test_temporary": 20,
+    "peripheral": 30,
+    "standard_workstation": 50,
+    "privileged_workstation": 70,
+    "business_server": 85,
+    "critical_service": 100,
+}
+CSV_CRITICALITY_MAP = {
+    "low": "test_temporary",
+    "normal": "standard_workstation",
+    "high": "privileged_workstation",
+    "critical": "critical_service",
+}
+CRITICALITY_LABELS = {
+    "test_temporary": "Test/temporary device",
+    "peripheral": "Printer/non-critical peripheral",
+    "standard_workstation": "Standard staff workstation",
+    "privileged_workstation": "Administration/privileged workstation",
+    "business_server": "Business application/server",
+    "critical_service": "Identity, finance, student/medical records, critical core service",
+}
+CRITICALITY_CATEGORY_VALUES = {label: value for value, label in ((
+    ("test_temporary", "Test/temporary device"),
+    ("peripheral", "Printer/non-critical peripheral"),
+    ("standard_workstation", "Standard staff workstation"),
+    ("privileged_workstation", "Administration/privileged workstation"),
+    ("business_server", "Business application/server"),
+    ("critical_service", "Identity, finance, student/medical records, critical core service"),
+))}
 NETWORK_CONTEXT_VALUES = {
     "Isolated lab/test network": 20,
     "Management-only/restricted segment": 30,
@@ -38,7 +68,7 @@ def policy_exposure(ip, policies):
     matches = [policy for policy in policies if address in policy["network"]]
     if not matches:
         return 50, True, None
-    selected = min(matches, key=lambda policy: policy["network"].prefixlen)
+    selected = max(matches, key=lambda policy: policy["network"].prefixlen)
     return NETWORK_CONTEXT_VALUES[selected["context_label"]], False, selected["context_label"]
 
 
@@ -52,13 +82,29 @@ def _canonicalize_identifier(identifier):
     return value
 
 
+def _identifier_forms(identifier):
+    value = _canonicalize_identifier(identifier)
+    if not value:
+        return set()
+    forms = {value}
+    dashed_ipv4 = re.fullmatch(r"(\d+):(\d+):(\d+):(\d+)", value)
+    if dashed_ipv4:
+        forms.add(".".join(dashed_ipv4.groups()))
+    return forms
+
+
 def policy_criticality(values, identifiers):
-    normalized_values = { _canonicalize_identifier(key): value for key, value in values.items() }
+    normalized_values = {
+        form: value
+        for key, value in values.items()
+        for form in _identifier_forms(key)
+    }
     for identifier in identifiers:
-        canon = _canonicalize_identifier(identifier)
-        if canon and (value := normalized_values.get(canon)):
-            return CRITICALITY_VALUES[value], value
-    return 50, "normal"
+        for form in _identifier_forms(identifier):
+            if value := normalized_values.get(form):
+                category = CSV_CRITICALITY_MAP[value]
+                return CRITICALITY_VALUES[category], category
+    return CRITICALITY_VALUES["standard_workstation"], "standard_workstation"
 
 
 def recommendations(asset):

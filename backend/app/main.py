@@ -2,7 +2,9 @@ import asyncio
 import csv
 import io
 import json
+import logging
 import threading
+import psycopg
 from contextlib import asynccontextmanager
 from typing import get_args
 
@@ -15,13 +17,13 @@ from .database import connection, initialize_schema
 from .scan_service import ScanCoordinator
 from .scanner import validate_authorized_subnet
 from .network import connected_ipv4_networks
-from .schemas import AssetCriticality, AssetUpdate, FindingUpdate, ScanStart, VulnerabilityMatchUpdate
+from .schemas import AssetCriticality, AssetUpdate, CriticalityUpdate, FindingUpdate, ScanStart, VulnerabilityMatchUpdate
 from .nvd import coordinator as nvd_coordinator
 from .epss import coordinator as epss_coordinator, recalculate_organization_risk
 from .kev import refresh_kev as run_kev_refresh
 from datetime import datetime, timezone
 from ipaddress import ip_network
-from .risk_engine import NETWORK_CONTEXT_VALUES
+from .risk_engine import CRITICALITY_CATEGORY_VALUES, CRITICALITY_LABELS, CRITICALITY_VALUES, NETWORK_CONTEXT_VALUES
 
 ASSET_CRITICALITY_VALUES = set(get_args(AssetCriticality))
 
@@ -47,11 +49,32 @@ coordinator = ScanCoordinator(hub.publish)
 async def lifespan(_app):
     initialize_schema()
     hub.loop = asyncio.get_running_loop()
+    _reclassify_existing_assets()
     epss_coordinator.start(hub.publish)
     try:
         yield
     finally:
         epss_coordinator.stop()
+
+
+def _reclassify_existing_assets():
+    """Apply the current device-classification priority to stored assets.
+
+    Devices discovered before the OS/vendor-aware classifier existed still carry
+    the old port-only type, so every stored asset is re-evaluated against the
+    evidence already on record instead of waiting for its next scan.
+    """
+    try:
+        corrections = repository.reclassify_stored_assets()
+    except Exception:
+        return []
+    for item in corrections:
+        logging.info(
+            "reclassified %s (%s): %s -> %s via %s",
+            item["ip_address"], item["hostname"] or "unresolved",
+            item["from"], item["to"], item["source"],
+        )
+    return corrections
 
 
 app = FastAPI(title="SecureOps Asset Discovery API", version="1.0.0", lifespan=lifespan)
@@ -210,6 +233,20 @@ def risk_assets():
     return {"data": repository.asset_risk_ranking()}
 
 
+@app.get("/api/v1/risk/readiness")
+def risk_readiness():
+    return {"data": repository.risk_readiness()}
+
+
+@app.post("/api/v1/risk/calculate")
+def calculate_risk():
+    readiness = repository.risk_readiness()
+    if not readiness["ready_to_rank"]:
+        raise HTTPException(409, readiness)
+    result = repository.calculate_and_store_ranking()
+    return {"data": result["assets"], "ranked_at": result["ranked_at"]}
+
+
 @app.get("/api/v1/risk/summary")
 def risk_summary():
     return {"data": repository.risk_summary()}
@@ -222,6 +259,25 @@ def patch_device(asset_id: str, payload: AssetUpdate):
     recalculate_organization_risk()
     hub.publish("ASSET_UPDATED", result)
     return {"data": result}
+
+
+@app.patch("/api/v1/risk/assets/{device_identifier}/criticality")
+def patch_risk_criticality(device_identifier: str, payload: CriticalityUpdate):
+    if payload.criticality_category not in CRITICALITY_CATEGORY_VALUES:
+        raise HTTPException(422, {"message": "invalid criticality category", "allowed": list(CRITICALITY_CATEGORY_VALUES)})
+    asset_id = repository.find_current_asset_identifier(device_identifier)
+    if not asset_id:
+        raise HTTPException(404, {"message": "device not found"})
+    criticality = CRITICALITY_CATEGORY_VALUES[payload.criticality_category]
+    try:
+        result = repository.set_manual_criticality(asset_id, criticality)
+    except psycopg.Error as exc:
+        raise HTTPException(500, {"message": "database write failed", "detail": str(exc).splitlines()[0]}) from exc
+    if not result:
+        raise HTTPException(404, {"message": "device not found or is not currently present"})
+    hub.publish("ASSET_UPDATED", result)
+    current = repository.get_current_ranking()
+    return {"data": result, "ranking": current["assets"], "ranked_at": current["ranked_at"], "ranking_stale": current["ranking_stale"], "criticality_category": payload.criticality_category}
 
 def _policy_rows(content, required_headers, row_validator):
     try:
@@ -312,7 +368,8 @@ async def upload_asset_criticality(file: UploadFile = File(...)):
         asset = repository.find_asset_by_identifier(identifier)
         if not asset:
             not_found.append(identifier); continue
-        result = repository.update_asset(asset["asset_id"], {"criticality": criticality})
+        repository.set_csv_criticality(asset["asset_id"], criticality)
+        result = repository.find_asset_by_identifier(identifier)
         hub.publish("ASSET_UPDATED", result)
         updated.append(identifier)
 

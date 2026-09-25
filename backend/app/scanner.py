@@ -12,6 +12,7 @@ from tempfile import TemporaryDirectory
 from concurrent.futures import ThreadPoolExecutor
 
 from .config import settings
+from .identification import classify_device
 from .network import connected_ipv4_networks, current_default_network
 
 
@@ -52,6 +53,14 @@ class HostObservation:
     device_type: str = "unknown"
     os_family: str | None = None
     os_confidence: float | None = None
+    # Layer 1 accuracy: tag each field with the source that supplied it
+    # ("snmp", "dhcp_lease", "reverse_dns", "netbios", "mdns", "nmap_heuristic")
+    # plus a full provenance map so admins can inspect all competing values.
+    hostname_source: str | None = None
+    vendor_source: str | None = None
+    os_source: str | None = None
+    device_type_source: str | None = None
+    identification_provenance: dict = field(default_factory=dict)
     discovery_sources: list[str] = field(default_factory=lambda: ["nmap"])
     services: list[ServiceObservation] = field(default_factory=list)
     exposure_checks: list[ExposureCheckObservation] = field(default_factory=list)
@@ -136,13 +145,19 @@ def parse_discovery_xml(path: Path) -> list[HostObservation]:
     return [item for host in ET.parse(path).getroot().findall("host") if (item := _host_identity(host))]
 
 
-def _classify(os_family: str | None, services: list[ServiceObservation]) -> str:
-    names = {service.name for service in services}
-    if names & {"ipp", "printer", "jetdirect"}: return "printer"
-    if names & {"router", "upnp"} or (os_family and "router" in os_family.lower()): return "router"
-    if names & {"microsoft-ds", "rdp"} or (os_family and "windows" in os_family.lower()): return "PC"
-    if names & {"ssh", "http", "https", "mysql", "postgresql"}: return "server"
-    return "unknown"
+def _classify(host: HostObservation) -> str:
+    """Device type from OS/vendor evidence first, open ports only as a fallback.
+
+    SSH/HTTPS/HTTP are management interfaces on switches, routers and firewalls
+    just as much as on servers, so the port heuristic can no longer decide a
+    device that has already told us it runs network-infrastructure firmware.
+    """
+    return classify_device(
+        os_family=host.os_family,
+        hostname=host.hostname,
+        vendor=host.vendor,
+        service_names=[service.name for service in host.services],
+    ).device_type
 
 
 def _service_os_evidence(services: list[ServiceObservation]) -> tuple[str | None, float | None]:
@@ -224,7 +239,7 @@ def enrich_from_fingerprint_xml(path: Path, hosts: list[HostObservation]) -> Non
             target.os_confidence = int(osmatch.get("accuracy", "0")) / 100
         if not target.os_family:
             target.os_family, target.os_confidence = _service_os_evidence(target.services)
-        target.device_type = _classify(target.os_family, target.services)
+        target.device_type = _classify(target)
 
 
 def discover_hosts(subnet: str, stop_event: threading.Event) -> list[HostObservation]:
@@ -237,21 +252,61 @@ def discover_hosts(subnet: str, stop_event: threading.Event) -> list[HostObserva
         return parse_discovery_xml(discovery_xml)
 
 
+def _port_counts_from_xml(path: Path) -> dict[str, tuple[int, int]]:
+    """Return {ip: (open_count, closed_count)} from a fingerprint XML."""
+    counts: dict[str, tuple[int, int]] = {}
+    try:
+        for node in ET.parse(path).getroot().findall("host"):
+            ident = _host_identity(node)
+            if not ident:
+                continue
+            open_ports = 0
+            closed_ports = 0
+            for port_node in node.findall("ports/port"):
+                state = port_node.find("state")
+                st = state.get("state") if state is not None else None
+                if st == "open":
+                    open_ports += 1
+                elif st == "closed":
+                    closed_ports += 1
+            counts[ident.ip_address] = (open_ports, closed_ports)
+    except Exception:
+        pass
+    return counts
+
+
+def _enrich_os_from_xml(path: Path, hosts: list[HostObservation]) -> None:
+    by_ip = {host.ip_address: host for host in hosts}
+    try:
+        for node in ET.parse(path).getroot().findall("host"):
+            ident = _host_identity(node)
+            if not ident or ident.ip_address not in by_ip:
+                continue
+            target = by_ip[ident.ip_address]
+            osmatch = node.find("os/osmatch")
+            if osmatch is not None:
+                osclass = osmatch.find("osclass")
+                target.os_family = (osclass.get("osfamily") if osclass is not None else None) or osmatch.get("name")
+                target.os_confidence = int(osmatch.get("accuracy", "0")) / 100
+                # OS detection can reveal network-infrastructure firmware the
+                # service probe missed, so the type is re-derived from it.
+                target.device_type = _classify(target)
+    except Exception:
+        pass
+
+
 def fingerprint_hosts(hosts: list[HostObservation], stop_event: threading.Event) -> list[HostObservation]:
     if not hosts:
         return hosts
     with TemporaryDirectory(prefix="secureops-fingerprint-") as directory:
         targets = [host.ip_address for host in hosts]
-        # Name lookup runs while Nmap fingerprints ports, so it adds no normal
-        # wall-clock delay to the scan.
         resolver_pool = ThreadPoolExecutor(max_workers=min(16, len(hosts)))
         name_futures = {host.ip_address: resolver_pool.submit(_resolve_device_name, host.ip_address) for host in hosts}
         base_arguments = [
             "-sV", "--version-light", "--top-ports", str(settings.fingerprint_top_ports),
             "-T4", "--max-retries", "0", "--host-timeout", f"{settings.host_timeout_seconds}s",
         ]
-        if settings.enable_os_detection:
-            base_arguments.extend(["-O", "--osscan-limit", "--osscan-guess"])
+        port_stats: dict[str, tuple[int, int]] = {}
         try:
             def fingerprint(target: str) -> Path:
                 output = Path(directory) / f"fingerprint-{target.replace('.', '-')}.xml"
@@ -261,6 +316,8 @@ def fingerprint_hosts(hosts: list[HostObservation], stop_event: threading.Event)
             with ThreadPoolExecutor(max_workers=min(settings.parallel_fingerprint_hosts, len(targets))) as fingerprint_pool:
                 for output in fingerprint_pool.map(fingerprint, targets):
                     enrich_from_fingerprint_xml(output, hosts)
+                    port_stats.update(_port_counts_from_xml(output))
+
             for host in hosts:
                 if host.hostname:
                     continue
@@ -268,6 +325,37 @@ def fingerprint_hosts(hosts: list[HostObservation], stop_event: threading.Event)
                     host.hostname = name_futures[host.ip_address].result(timeout=0.1)
                 except TimeoutError:
                     pass
+                # A resolved hostname can carry an infrastructure naming prefix
+                # that the port heuristic never would have seen.
+                host.device_type = _classify(host)
+
+            # Requirement 3: Selective, targeted Nmap OS detection.
+            # Instead of running -O broadly with --osscan-guess (noisy/low confidence),
+            # only run -O against hosts that meet Nmap's own documented precondition:
+            # at least one open AND one closed TCP port. Skip all others.
+            if settings.enable_os_detection:
+                if settings.selective_os_detection:
+                    qualified = [
+                        ip for ip, (open_c, closed_c) in port_stats.items()
+                        if open_c >= 1 and closed_c >= 1
+                    ]
+                    os_args = ["-O", "--osscan-limit"]  # No --osscan-guess: reliable matches only
+                else:
+                    qualified = targets
+                    os_args = ["-O", "--osscan-limit", "--osscan-guess"]
+
+                if qualified:
+                    def os_scan(target: str) -> Path:
+                        out = Path(directory) / f"os-{target.replace('.', '-')}.xml"
+                        _run_nmap([*os_args, "-T4", "--max-retries", "0",
+                                   "--host-timeout", f"{settings.host_timeout_seconds}s", target],
+                                  out, stop_event)
+                        return out
+
+                    with ThreadPoolExecutor(max_workers=min(settings.parallel_fingerprint_hosts, len(qualified))) as os_pool:
+                        for out in os_pool.map(os_scan, qualified):
+                            _enrich_os_from_xml(out, hosts)
+
         finally:
             resolver_pool.shutdown(wait=False, cancel_futures=True)
         return hosts
@@ -373,8 +461,18 @@ def run_exposure_checks(hosts: list[HostObservation], stop_event: threading.Even
                 "--script-timeout", "15s", "--host-timeout", f"{settings.exposure_check_timeout_seconds}s",
                 "--max-retries", "0", "-T4", host.ip_address,
             ]
-            _run_nmap(arguments, output, stop_event)
-            parse_exposure_check_xml(output, host)
+            try:
+                _run_nmap(arguments, output, stop_event)
+                parse_exposure_check_xml(output, host)
+            except ScanStopped:
+                raise
+            except Exception as exc:
+                for check_id, ports in checks.items():
+                    for port in ports:
+                        host.exposure_checks.append(ExposureCheckObservation(
+                            check_id=check_id, port=port, protocol="tcp", status="failed",
+                            output=f"Approved exposure check failed: {str(exc)[:1000]}",
+                        ))
 
         with ThreadPoolExecutor(max_workers=min(settings.parallel_exposure_hosts, len(eligible))) as pool:
             list(pool.map(check_host, eligible))
