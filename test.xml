@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<?xml-stylesheet href="file:///C:/Program Files (x86)/Nmap/nmap.xsl" type="text/xsl"?>
+<!-- Nmap 7.991 scan initiated Thu Oct  8 16:11:21 2026 as: nmap -sV -&#45;version-light -&#45;top-ports 75 -T4 -&#45;max-retries 0 -&#45;host-timeout 20s -oX test.xml 172.16.2.3 -->
+<nmaprun scanner="nmap" args="nmap -sV -&#45;version-light -&#45;top-ports 75 -T4 -&#45;max-retries 0 -&#45;host-timeout 20s -oX test.xml 172.16.2.3" start="1791472281" startstr="Thu Oct  8 16:11:21 2026" version="7.991" xmloutputversion="1.05">
+<scaninfo type="syn" protocol="tcp" numservices="75" services="7,21-23,25-26,53,79-81,88,106,110-111,113,135,139,143-144,179,199,389,427,443,445,465,513-515,543-544,548,554,587,631,646,990,993,995,1025-1027,1110,1433,1720,1723,2000-2001,2049,2121,3306,3389,5000,5060,5101,5357,5631,5666,5800,5900,6000-6001,8000,8008,8080-8081,8443,8888,10000,32768,49152-49156"/>
+<verbose level="0"/>
+<debugging level="0"/>
+<runstats><finished time="1791472282" timestr="Thu Oct  8 16:11:22 2026" summary="Nmap done at Thu Oct  8 16:11:22 2026; 1 IP address (0 hosts up) scanned in 1.15 seconds" elapsed="1.15" exit="success"/><hosts up="0" down="1" total="1"/>
+</runstats>
+</nmaprun>
