@@ -117,7 +117,7 @@ export default function ScanSessions() {
                         <Square size={12} fill="currentColor" />
                         Stop
                       </button>
-                    ) : (
+                    ) : (s.status === 'FAILED' || s.status === 'STOPPED') ? (
                       <button
                         onClick={() => resumeMutation.mutate(s.id)}
                         disabled={resumeMutation.isPending}
@@ -126,7 +126,7 @@ export default function ScanSessions() {
                         <RotateCcw size={12} />
                         Resume
                       </button>
-                    )}
+                    ) : null}
                   </td>
                 </tr>
               ))}

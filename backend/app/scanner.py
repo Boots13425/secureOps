@@ -1,4 +1,5 @@
 import ipaddress
+import logging
 import re
 import shutil
 import socket
@@ -13,7 +14,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 from .config import settings
 from .identification import classify_device
-from .network import connected_ipv4_networks, current_default_network
+from .network import connected_ipv4_networks, current_default_network, interface_for_target, local_subnet_contains
+
+log = logging.getLogger("secureops.scanner")
 
 
 @dataclass
@@ -66,6 +69,10 @@ class HostObservation:
     exposure_checks: list[ExposureCheckObservation] = field(default_factory=list)
     asset_id: str | None = None
     is_new_asset: bool = False
+    # Set when no hostname could be established, so the UI can explain *why*
+    # instead of just showing "Unknown". None when a name was resolved or when
+    # the device is local and every applicable method was simply tried.
+    hostname_unresolved_reason: str | None = None
 
 
 class ScanStopped(Exception):
@@ -106,7 +113,22 @@ def ensure_nmap() -> str:
 
 def _run_nmap(arguments: list[str], output: Path, stop_event: threading.Event) -> None:
     command = [ensure_nmap(), *arguments, "-oX", str(output)]
-    process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    log.info("nmap command: %s", " ".join(command))
+    # Check if running with admin/raw-socket privileges (required for -PR ARP scan)
+    import os
+    has_admin = False
+    try:
+        has_admin = os.getuid() == 0  # Unix/Linux
+    except AttributeError:
+        # Windows: check if running as admin
+        try:
+            import ctypes
+            has_admin = ctypes.windll.shell32.IsUserAnAdmin() != 0
+        except Exception:
+            has_admin = False
+    log.info("nmap running with admin/raw-socket privileges: %s", has_admin)
+    
+    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         started = time.monotonic()
         while process.poll() is None:
@@ -116,12 +138,27 @@ def _run_nmap(arguments: list[str], output: Path, stop_event: threading.Event) -
             if time.monotonic() - started > settings.scan_timeout_seconds:
                 process.terminate()
                 raise RuntimeError(f"Nmap exceeded the {settings.scan_timeout_seconds}-second scan timeout")
-        stderr = process.stderr.read() if process.stderr else ""
+        stdout, stderr = process.communicate()
+        elapsed = time.monotonic() - started
+        log.info("nmap completed in %.2fs, returncode=%d", elapsed, process.returncode)
+        if stderr:
+            log.info("nmap stderr: %s", stderr.strip())
+        if stdout:
+            log.debug("nmap stdout (first 500 chars): %s", stdout[:500])
         if process.returncode != 0:
             raise RuntimeError(stderr.strip() or f"Nmap exited with code {process.returncode}")
     finally:
         if process.poll() is None:
             process.kill()
+        # Fully reap the process before returning. terminate()/kill() are
+        # asynchronous on Windows, and the caller's TemporaryDirectory cleanup
+        # deletes nmap's -oX file. If nmap still holds that handle the rmtree
+        # raises WinError 32, which masks the real scan error (e.g. the scan
+        # timeout) and reports a confusing file-lock failure instead.
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 def _host_identity(host: ET.Element) -> HostObservation | None:
@@ -176,35 +213,135 @@ def _service_os_evidence(services: list[ServiceObservation]) -> tuple[str | None
     return None, None
 
 
-def _resolve_device_name(ip_address: str) -> str | None:
-    """Layered best-effort resolution; absence remains unknown."""
+def _local_networks() -> list:
+    """Networks the scanner itself is attached to, from its own interfaces.
+
+    Used to decide which name-resolution methods are even worth attempting:
+    NetBIOS and mDNS are both confined to the local broadcast domain, so on a
+    remote segment they cannot answer and only cost the full timeout.
+    """
+    networks = []
+    try:
+        import psutil
+        for addresses in psutil.net_if_addrs().values():
+            for entry in addresses:
+                if entry.family != socket.AF_INET or not entry.netmask:
+                    continue
+                try:
+                    networks.append(ipaddress.ip_network(
+                        f"{entry.address}/{entry.netmask}", strict=False))
+                except ValueError:
+                    continue
+    except Exception:
+        pass
+    if not networks:
+        # Fall back to a /24 assumption per local address rather than treating
+        # every host as remote and silently disabling name resolution.
+        try:
+            for item in socket.getaddrinfo(socket.gethostname(), None, family=socket.AF_INET):
+                networks.append(ipaddress.ip_network(f"{item[4][0]}/24", strict=False))
+        except OSError:
+            pass
+    return networks
+
+
+_LOCAL_NETWORKS = None
+
+# Extra wall-clock allowed for a killed nbtstat process to be reaped on
+# Windows. The subprocess timeout is the intended budget; this is only the
+# slack before the result is abandoned, so a wedged child cannot stall a scan.
+NETBIOS_REAP_GRACE_SECONDS = 1.0
+
+
+def is_local_target(ip_address: str) -> bool:
+    """True when the address shares a subnet with one of our interfaces."""
+    global _LOCAL_NETWORKS
+    if _LOCAL_NETWORKS is None:
+        _LOCAL_NETWORKS = _local_networks()
+    try:
+        address = ipaddress.ip_address(ip_address)
+    except ValueError:
+        return False
+    return any(address in network for network in _LOCAL_NETWORKS)
+
+
+def _resolve_device_name(ip_address: str) -> tuple[str | None, str | None]:
+    """Layered best-effort resolution; absence remains unknown.
+    
+    Returns (hostname, source) where source is 'reverse_dns', 'netbios', or None.
+    """
+    # First check if this is one of our own local addresses - if so, return our hostname
     try:
         local_name = socket.gethostname()
         local_addresses = {
             item[4][0] for item in socket.getaddrinfo(local_name, None, family=socket.AF_INET)
         }
         if ip_address in local_addresses:
-            return local_name
+            return local_name, "local"
     except OSError:
         pass
+    # Reverse DNS is unicast and works across subnets, so it is always tried.
+    # BUT: do not return our own hostname for remote addresses. If reverse DNS
+    # returns our hostname for a remote IP, treat it as unresolved (likely DNS
+    # misconfiguration or PTR record pointing to us).
     try:
         name = socket.gethostbyaddr(ip_address)[0].rstrip(".")
         if name and name != ip_address:
-            return name
+            # If the reverse DNS name matches our own hostname, discard it for remote IPs
+            try:
+                if name == socket.gethostname():
+                    return None, None
+            except OSError:
+                pass
+            return name, "reverse_dns"
     except OSError:
         pass
-    if shutil.which("nbtstat"):
+    # NetBIOS is opt-in: see settings.netbios_name_resolution_enabled. It is
+    # also local-broadcast only, so it is never attempted for a remote device.
+    if not settings.netbios_name_resolution_enabled or not is_local_target(ip_address):
+        return None, None
+    name = _netbios_name(ip_address)
+    if name:
+        return name, "netbios"
+    return None, None
+
+
+def _netbios_name(ip_address: str) -> str | None:
+    """NetBIOS name lookup, bounded by an explicit wall-clock budget.
+
+    subprocess.run(timeout=...) is not sufficient here on Windows. Measured on
+    this host, TerminateProcess returned at the 2s timeout but the process
+    handle was not signalled until ~9s, because the child was blocked in the
+    NetBIOS/BROWSER kernel call. The reap is therefore done on a helper thread
+    with its own deadline, so a wedged lookup can never hold up the caller for
+    more than the configured budget.
+    """
+    if not shutil.which("nbtstat"):
+        return None
+    budget = settings.netbios_timeout_seconds
+    box: dict = {}
+
+    def _run():
         try:
             result = subprocess.run(
                 ["nbtstat", "-A", ip_address], capture_output=True, text=True,
-                timeout=2, check=False, encoding="utf-8", errors="replace",
+                timeout=budget, check=False, encoding="utf-8", errors="replace",
             )
-            for line in result.stdout.splitlines():
-                match = re.match(r"\s*(\S.*?)\s+<00>\s+UNIQUE", line, re.IGNORECASE)
-                if match:
-                    return match.group(1).strip()
+            box["stdout"] = result.stdout
         except (OSError, subprocess.TimeoutExpired):
             pass
+
+    worker = threading.Thread(target=_run, daemon=True)
+    worker.start()
+    worker.join(timeout=budget + NETBIOS_REAP_GRACE_SECONDS)
+    if worker.is_alive():
+        # Give up on the result rather than block the scan; the lookup almost
+        # always yields nothing, so losing it costs nothing measurable.
+        return None
+    for line in (box.get("stdout") or "").splitlines():
+        match = re.match(r"\s*(\S.*?)\s+<00>\s+UNIQUE", line, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
     return None
 
 
@@ -242,14 +379,91 @@ def enrich_from_fingerprint_xml(path: Path, hosts: list[HostObservation]) -> Non
         target.device_type = _classify(target)
 
 
-def discover_hosts(subnet: str, stop_event: threading.Event) -> list[HostObservation]:
+def discover_hosts(subnet: str, stop_event: threading.Event, remote: bool | None = None, include_infrastructure: list[str] | None = None) -> list[HostObservation]:
+    """Host discovery for one subnet.
+
+    `remote` swaps ARP for ICMP + TCP ping probes. ARP only works on the local
+    broadcast segment, so asking a router for a VLAN on another subnet with -PR
+    would return nothing at all and be indistinguishable from an empty network.
+    The same parser, fingerprinting and enrichment run either way, so this is
+    the only place that differs between a local and a cross-network scan.
+    """
+    if remote is None:
+        # Default to the subnet being local, so existing callers are unchanged.
+        try:
+            remote = not any(ipaddress.ip_address(host).version == 4 and
+                             ipaddress.ip_address(host) in ipaddress.ip_network(subnet, strict=False)
+                             for host in _local_networks_addresses())
+        except ValueError:
+            remote = False
+
+    # Determine which interface routes to the target subnet
+    iface_info = interface_for_target(subnet)
+    if iface_info:
+        iface_name, source_ip = iface_info
+        log.info("discover_hosts: subnet=%s, remote=%s, using interface=%s source_ip=%s", subnet, remote, iface_name, source_ip)
+    else:
+        log.warning("discover_hosts: subnet=%s, remote=%s, no route found", subnet, remote)
+        iface_name, source_ip = None, None
+
+    log.info("discover_hosts: subnet=%s, remote=%s", subnet, remote)
     with TemporaryDirectory(prefix="secureops-scan-") as directory:
         discovery_xml = Path(directory) / "discovery.xml"
-        # ARP is both the fastest and most reliable discovery mechanism for
-        # devices on the same local broadcast segment. Name resolution runs
-        # separately and in parallel with fingerprinting below.
-        _run_nmap(["-sn", "-PR", "-n", "--max-retries", "1", "-T4", subnet], discovery_xml, stop_event)
-        return parse_discovery_xml(discovery_xml)
+        
+        # Build nmap arguments with interface binding for remote scans
+        if remote:
+            # -PE: ICMP echo. -PS: TCP SYN to common ports, which finds hosts
+            # that drop or rate-limit ICMP (a lot of appliances and firewalls).
+            # -T4 with aggressive parallelism for remote sweeps - the default
+            # parallelism is too slow for a full /24. --min-hostgroup and
+            # --max-parallelism ensure we probe many hosts concurrently instead
+            # of waiting for timeouts sequentially.
+            arguments = ["-sn", "-n", "-PE", "-PS22,80,443,445,3389",
+                         "--max-retries", "1", "--host-timeout",
+                         f"{settings.host_timeout_seconds}s",
+                         "--min-hostgroup", "64",
+                         "--max-parallelism", "64",
+                         "-T4"]
+        else:
+            # ARP is both the fastest and most reliable discovery mechanism for
+            # devices on the same local broadcast segment. Name resolution runs
+            # separately and in parallel with fingerprinting below.
+            arguments = ["-sn", "-PR", "-n", "--max-retries", "1", "-T4"]
+        
+        # Add interface binding if available
+        if iface_name:
+            arguments.extend(["-e", iface_name])
+            # Also set source IP to be explicit
+            arguments.extend(["-S", source_ip])
+        
+        arguments.append(subnet)
+        
+        _run_nmap(arguments, discovery_xml, stop_event)
+        hosts = parse_discovery_xml(discovery_xml)
+        log.info("discover_hosts: found %d hosts up in %s", len(hosts), subnet)
+        for h in hosts:
+            log.info("  host: ip=%s, mac=%s, hostname=%s", h.ip_address, h.mac_address, h.hostname)
+        
+        # Add infrastructure hosts if they weren't discovered
+        if include_infrastructure:
+            existing_ips = {h.ip_address for h in hosts}
+            for ip in include_infrastructure:
+                if ip not in existing_ips:
+                    log.info("discover_hosts: adding infrastructure host %s", ip)
+                    hosts.append(HostObservation(
+                        ip_address=ip,
+                        mac_address=None,
+                        vendor=None,
+                        hostname=None,
+                        device_type="unknown",
+                        discovery_sources=["infrastructure"],
+                    ))
+        return hosts
+
+
+def _local_networks_addresses() -> list[str]:
+    """Network addresses of the scanner's own attached networks."""
+    return [str(network.network_address) for network in _local_networks()]
 
 
 def _port_counts_from_xml(path: Path) -> dict[str, tuple[int, int]]:
@@ -310,19 +524,35 @@ def fingerprint_hosts(hosts: list[HostObservation], stop_event: threading.Event)
         try:
             def fingerprint(target: str) -> Path:
                 output = Path(directory) / f"fingerprint-{target.replace('.', '-')}.xml"
-                _run_nmap([*base_arguments, target], output, stop_event)
+                
+                # Determine interface for this specific target
+                iface_info = interface_for_target(target)
+                fp_args = list(base_arguments)
+                if iface_info:
+                    iface_name, source_ip = iface_info
+                    fp_args.extend(["-e", iface_name, "-S", source_ip])
+                
+                fp_args.append(target)
+                _run_nmap(fp_args, output, stop_event)
                 return output
 
             with ThreadPoolExecutor(max_workers=min(settings.parallel_fingerprint_hosts, len(targets))) as fingerprint_pool:
+                _fp_started = time.monotonic()
                 for output in fingerprint_pool.map(fingerprint, targets):
                     enrich_from_fingerprint_xml(output, hosts)
                     port_stats.update(_port_counts_from_xml(output))
+                logging.getLogger("secureops.scan").info(
+                    "    nmap -sV: %d host(s), %d workers, %.2fs",
+                    len(targets), min(settings.parallel_fingerprint_hosts, len(targets)), time.monotonic() - _fp_started)
 
             for host in hosts:
                 if host.hostname:
                     continue
                 try:
-                    host.hostname = name_futures[host.ip_address].result(timeout=0.1)
+                    name, source = name_futures[host.ip_address].result(timeout=0.1)
+                    if name:
+                        host.hostname = name
+                        host.hostname_source = source
                 except TimeoutError:
                     pass
                 # A resolved hostname can carry an infrastructure naming prefix
@@ -347,14 +577,23 @@ def fingerprint_hosts(hosts: list[HostObservation], stop_event: threading.Event)
                 if qualified:
                     def os_scan(target: str) -> Path:
                         out = Path(directory) / f"os-{target.replace('.', '-')}.xml"
-                        _run_nmap([*os_args, "-T4", "--max-retries", "0",
-                                   "--host-timeout", f"{settings.host_timeout_seconds}s", target],
-                                  out, stop_event)
+                        os_scan_args = list(os_args)
+                        iface_info = interface_for_target(target)
+                        if iface_info:
+                            iface_name, source_ip = iface_info
+                            os_scan_args.extend(["-e", iface_name, "-S", source_ip])
+                        os_scan_args.extend(["-T4", "--max-retries", "0",
+                                           "--host-timeout", f"{settings.host_timeout_seconds}s", target])
+                        _run_nmap(os_scan_args, out, stop_event)
                         return out
 
                     with ThreadPoolExecutor(max_workers=min(settings.parallel_fingerprint_hosts, len(qualified))) as os_pool:
+                        _os_started = time.monotonic()
                         for out in os_pool.map(os_scan, qualified):
                             _enrich_os_from_xml(out, hosts)
+                        logging.getLogger("secureops.scan").info(
+                            "    nmap -O: %d of %d host(s) qualified, %.2fs",
+                            len(qualified), len(targets), time.monotonic() - _os_started)
 
         finally:
             resolver_pool.shutdown(wait=False, cancel_futures=True)
@@ -456,11 +695,19 @@ def run_exposure_checks(hosts: list[HostObservation], stop_event: threading.Even
                 raise RuntimeError("An unapproved Nmap exposure script was requested")
             ports = sorted({port for selected in checks.values() for port in selected})
             output = Path(directory) / f"exposure-{host.ip_address.replace('.', '-')}.xml"
+            
+            # Determine interface for this target
+            iface_info = interface_for_target(host.ip_address)
             arguments = [
                 "-Pn", "-n", "-sT", "--script", ",".join(scripts), "-p", ",".join(map(str, ports)),
                 "--script-timeout", "15s", "--host-timeout", f"{settings.exposure_check_timeout_seconds}s",
-                "--max-retries", "0", "-T4", host.ip_address,
+                "--max-retries", "0", "-T4",
             ]
+            if iface_info:
+                iface_name, source_ip = iface_info
+                arguments.extend(["-e", iface_name, "-S", source_ip])
+            arguments.append(host.ip_address)
+            
             try:
                 _run_nmap(arguments, output, stop_event)
                 parse_exposure_check_xml(output, host)

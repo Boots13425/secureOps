@@ -9,6 +9,11 @@ function wsUrl() {
 }
 
 const RECONNECT_DELAY_MS = 3000
+// A TCP connection can die without a close event ever arriving (sleep/wake,
+// VPN drop, NAT timeout). Nothing would then re-open it, so the dashboard would
+// quietly stop updating. If no message has been seen for this long on an open
+// socket, treat it as dead and force a reconnect.
+const STALE_SOCKET_MS = 45_000
 
 /**
  * Keeps the dashboard live: every session lifecycle change (started/
@@ -23,11 +28,32 @@ export function useScanSocket() {
   useEffect(() => {
     let socket
     let reconnectTimer
+    let lastMessageAt = 0
+    let watchdog = null
+
+    function stopWatchdog() {
+      if (watchdog) {
+        clearInterval(watchdog)
+        watchdog = null
+      }
+    }
 
     function connect() {
       socket = new WebSocket(wsUrl())
+      lastMessageAt = Date.now()
+
+      socket.onopen = () => {
+        stopWatchdog()
+        watchdog = setInterval(() => {
+          if (Date.now() - lastMessageAt > STALE_SOCKET_MS) {
+            // Force the close handler to run so the reconnect path executes.
+            socket.close()
+          }
+        }, 5_000)
+      }
 
       socket.onmessage = (event) => {
+        lastMessageAt = Date.now()
         let data
         try {
           data = JSON.parse(event.data)
@@ -80,6 +106,7 @@ export function useScanSocket() {
       }
 
       socket.onclose = () => {
+        stopWatchdog()
         reconnectTimer = setTimeout(connect, RECONNECT_DELAY_MS)
       }
 
@@ -92,6 +119,7 @@ export function useScanSocket() {
 
     return () => {
       clearTimeout(reconnectTimer)
+      stopWatchdog()
       if (socket) {
         socket.onclose = null
         // Closing a socket that's still CONNECTING (e.g. React StrictMode's

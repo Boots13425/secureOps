@@ -1,7 +1,13 @@
 fastapi==0.116.1
 uvicorn[standard]==0.35.0
+# Imported directly by app/schemas.py, so it is pinned explicitly rather than
+# left to float with whatever FastAPI happens to pull in.
+pydantic>=2.11,<3
 psycopg[binary]>=3.2.9
 python-dotenv==1.1.1
 psutil>=7.0,<8
 certifi>=2024.2.2
 python-multipart>=0.0.20
+openpyxl>=3.1.5
+# Test-only: FastAPI's TestClient requires httpx
+httpx>=0.28.1

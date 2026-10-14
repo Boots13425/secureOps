@@ -1,4 +1,4 @@
-import { useState } from 'react'
+﻿import { useState } from 'react'
 import { RefreshCw, Square, Cpu, HardDrive, TrendingUp, Boxes } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts'
 import { format } from 'date-fns'
@@ -133,13 +133,13 @@ export default function Dashboard() {
         <MetricCard
           label="Total Devices"
           value={metrics?.total}
-          sub={metrics ? 'found in the last scan' : hasCompletedScan ? '' : 'No completed scan yet'}
+          sub={metrics ? 'directly probed in latest scan per network' : hasCompletedScan ? '' : 'No completed scan yet'}
         />
-        <MetricCard label="Observed" value={metrics?.present} sub={metrics ? 'all responded in this scan' : hasCompletedScan ? '' : 'No completed scan yet'} tone="ok" />
+        <MetricCard label="Observed" value={metrics?.present} sub={metrics ? 'responding in their network\'s latest scan' : hasCompletedScan ? '' : 'No completed scan yet'} tone="ok" />
         <MetricCard
           label="Missing"
           value={missingCount}
-          sub="seen before, absent from the last scan"
+          sub="seen before, absent from their network's latest scan"
           tone="danger"
         />
         <MetricCard

@@ -4,28 +4,33 @@ import io
 import json
 import logging
 import threading
+from pathlib import Path
+
 import psycopg
 from contextlib import asynccontextmanager
-from typing import get_args
 
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from openpyxl import load_workbook
 
 from . import repository
+from . import cross_network
 from .config import settings
 from .database import connection, initialize_schema
-from .scan_service import ScanCoordinator
+from .scan_service import ScanAlreadyRunning, ScanCoordinator
 from .scanner import validate_authorized_subnet
 from .network import connected_ipv4_networks
-from .schemas import AssetCriticality, AssetUpdate, CriticalityUpdate, FindingUpdate, ScanStart, VulnerabilityMatchUpdate
+from .schemas import (AssetUpdate, FindingUpdate, NetworkScanRequest, ScanStart,
+                      VulnerabilityMatchUpdate)
 from .nvd import coordinator as nvd_coordinator
 from .epss import coordinator as epss_coordinator, recalculate_organization_risk
 from .kev import refresh_kev as run_kev_refresh
 from datetime import datetime, timezone
-from ipaddress import ip_network
-from .risk_engine import CRITICALITY_CATEGORY_VALUES, CRITICALITY_LABELS, CRITICALITY_VALUES, NETWORK_CONTEXT_VALUES
+from .risk_engine import parse_asset_document
 
-ASSET_CRITICALITY_VALUES = set(get_args(AssetCriticality))
+# Shown verbatim by the UI (tooltip, inline line, and the 409 body) so the
+# blocked-ranking reason is worded identically everywhere.
+READINESS_BLOCKED_MESSAGE = "Upload the asset document first. Ranking runs only after it is uploaded."
 
 class EventHub:
     def __init__(self): self.clients: set[WebSocket] = set(); self.loop = None
@@ -49,12 +54,35 @@ coordinator = ScanCoordinator(hub.publish)
 async def lifespan(_app):
     initialize_schema()
     hub.loop = asyncio.get_running_loop()
+    _reconcile_orphaned_sessions()
     _reclassify_existing_assets()
     epss_coordinator.start(hub.publish)
+    coordinator.start_sweeper()
     try:
         yield
     finally:
+        coordinator.stop_sweeper()
         epss_coordinator.stop()
+
+
+def _reconcile_orphaned_sessions():
+    """Fail any session still marked RUNNING at startup.
+
+    Scan work happens in in-process threads, so a restart (crash, redeploy,
+    Ctrl+C) kills those threads outright and leaves their rows stuck at
+    RUNNING forever. Nothing ever finishes them: the dashboard then shows
+    "Stop Session" permanently, and a device that was never probed stays
+    counted exactly like one that was probed and did not answer.
+    """
+    try:
+        stranded = repository.fail_orphaned_running_sessions()
+    except Exception:
+        return
+    for session in stranded:
+        logging.info(
+            "marked orphaned session %s as FAILED (its scan thread did not "
+            "survive a restart)", session["id"],
+        )
 
 
 def _reclassify_existing_assets():
@@ -78,7 +106,7 @@ def _reclassify_existing_assets():
 
 
 app = FastAPI(title="SecureOps Asset Discovery API", version="1.0.0", lifespan=lifespan)
-app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_origins), allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(CORSMiddleware, allow_origins=list(settings.cors_origins), allow_origin_regex=settings.cors_origin_regex, allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
 
 
 @app.get("/health")
@@ -88,8 +116,24 @@ def health():
 
 
 @app.get("/api/v1/devices")
-def devices(status: str | None = None, device_type: str | None = Query(default=None, alias="type"), scan_id: str | None = None):
-    return {"data": repository.list_assets(status, device_type, scan_id)}
+def devices(
+    status: str | None = None, 
+    device_type: str | None = Query(default=None, alias="type"), 
+    scan_id: str | None = None,
+    last_24h: bool | None = Query(default=None, alias="last24h"),
+    network_id: str | None = None,
+    latest_scan_per_network: bool | None = Query(default=None, alias="latestScanPerNetwork"),
+    direct_probe_only: bool | None = Query(default=None, alias="directProbeOnly"),
+):
+    # Default to latest scan per network and direct probe only for "Devices - right now" view
+    if latest_scan_per_network is None:
+        latest_scan_per_network = True
+    if direct_probe_only is None:
+        direct_probe_only = True
+    return {"data": repository.list_assets(
+        status, device_type, scan_id, last_24h, network_id, 
+        latest_scan_per_network, direct_probe_only
+    )}
 
 
 @app.get("/api/v1/devices/{asset_id}/services")
@@ -240,11 +284,13 @@ def risk_readiness():
 
 @app.post("/api/v1/risk/calculate")
 def calculate_risk():
+    # Ranking is never produced without an asset document, and the 409 body is
+    # the readiness payload so the UI can explain exactly what is missing.
     readiness = repository.risk_readiness()
     if not readiness["ready_to_rank"]:
-        raise HTTPException(409, readiness)
+        raise HTTPException(409, {**readiness, "message": READINESS_BLOCKED_MESSAGE})
     result = repository.calculate_and_store_ranking()
-    return {"data": result["assets"], "ranked_at": result["ranked_at"]}
+    return {"data": result, "ranked_at": result["last_ranked_at"]}
 
 
 @app.get("/api/v1/risk/summary")
@@ -261,120 +307,63 @@ def patch_device(asset_id: str, payload: AssetUpdate):
     return {"data": result}
 
 
-@app.patch("/api/v1/risk/assets/{device_identifier}/criticality")
-def patch_risk_criticality(device_identifier: str, payload: CriticalityUpdate):
-    if payload.criticality_category not in CRITICALITY_CATEGORY_VALUES:
-        raise HTTPException(422, {"message": "invalid criticality category", "allowed": list(CRITICALITY_CATEGORY_VALUES)})
-    asset_id = repository.find_current_asset_identifier(device_identifier)
-    if not asset_id:
-        raise HTTPException(404, {"message": "device not found"})
-    criticality = CRITICALITY_CATEGORY_VALUES[payload.criticality_category]
-    try:
-        result = repository.set_manual_criticality(asset_id, criticality)
-    except psycopg.Error as exc:
-        raise HTTPException(500, {"message": "database write failed", "detail": str(exc).splitlines()[0]}) from exc
-    if not result:
-        raise HTTPException(404, {"message": "device not found or is not currently present"})
-    hub.publish("ASSET_UPDATED", result)
-    current = repository.get_current_ranking()
-    return {"data": result, "ranking": current["assets"], "ranked_at": current["ranked_at"], "ranking_stale": current["ranking_stale"], "criticality_category": payload.criticality_category}
-
-def _policy_rows(content, required_headers, row_validator):
-    try:
-        reader = csv.DictReader(io.StringIO(content.decode("utf-8-sig")))
-    except UnicodeDecodeError as exc:
-        raise HTTPException(400, {"message": "Policy file must be a UTF-8 CSV", "errors": []}) from exc
-    headers = [header.strip().lower() for header in (reader.fieldnames or []) if header is not None]
-    if set(headers) != required_headers or len(headers) != len(required_headers):
-        raise HTTPException(400, {"message": "CSV headers do not match the required columns", "expected": sorted(required_headers), "errors": []})
-    valid_rows, errors = [], []
-    for row_number, row in enumerate(reader, start=2):
-        normalized = {str(key).strip().lower(): (value or "").strip() for key, value in row.items() if key is not None}
-        error = row_validator(row_number, normalized)
-        if error:
-            errors.append(error)
-        else:
-            valid_rows.append(normalized)
-    if errors:
-        raise HTTPException(400, {"message": "Policy validation failed", "errors": errors})
-    if not valid_rows:
-        raise HTTPException(400, {"message": "Policy CSV contains no data rows", "errors": []})
-    return valid_rows
+ASSET_DOCUMENT_SHEET_NAME = "Device Criticality"
 
 
-@app.post("/api/v1/risk/policy/device-criticality")
-async def upload_device_criticality_policy(file: UploadFile = File(...)):
-    content = await file.read()
-    allowed = {"low", "normal", "high", "critical"}
-
-    def validate(row_number, row):
-        if not row["device_identifier"]:
-            return {"row": row_number, "message": "device_identifier must not be empty"}
-        if row["criticality"] not in allowed:
-            return {"row": row_number, "message": f"criticality must be one of {sorted(allowed)}, got '{row['criticality']}'"}
-        return None
-
-    rows = _policy_rows(content, {"device_identifier", "criticality"}, validate)
-    updated_at = repository.save_device_criticality_policy(rows)
-    return {"rows_uploaded": len(rows), "updated_at": updated_at.isoformat()}
-
-
-@app.post("/api/v1/risk/policy/network-context")
-async def upload_network_context_policy(file: UploadFile = File(...)):
-    content = await file.read()
-
-    def validate(row_number, row):
-        if not row["subnet_cidr"]:
-            return {"row": row_number, "message": "subnet_cidr must not be empty"}
+def _decode_asset_document(filename: str, content: bytes) -> list[list]:
+    """Return the document as a list of rows, from .csv or .xlsx."""
+    suffix = Path(filename or "").suffix.lower()
+    if suffix in {".xlsx", ".xlsm"}:
         try:
-            ip_network(row["subnet_cidr"], strict=False)
-        except ValueError:
-            return {"row": row_number, "message": f"subnet_cidr is not valid CIDR notation: '{row['subnet_cidr']}'"}
-        if row["context_label"] not in NETWORK_CONTEXT_VALUES:
-            return {"row": row_number, "message": f"context_label must be one of the six exact values, got '{row['context_label']}'"}
-        return None
-
-    rows = _policy_rows(content, {"subnet_cidr", "context_label", "notes"}, validate)
-    updated_at = repository.save_network_context_policy(rows)
-    return {"rows_uploaded": len(rows), "updated_at": updated_at.isoformat()}
-
-
-@app.post("/api/v1/assets/policy/upload")
-async def upload_asset_policy_compatibility(file: UploadFile = File(...)):
-    return await upload_device_criticality_policy(file)
-
-
-@app.post("/api/v1/assets/criticality/upload")
-async def upload_asset_criticality(file: UploadFile = File(...)):
-    content = await file.read()
+            workbook = load_workbook(io.BytesIO(content), data_only=True, read_only=True)
+        except Exception as exc:
+            raise HTTPException(400, {"message": "The file could not be read as a spreadsheet", "errors": [
+                {"row": 0, "column": "-", "problem": str(exc)[:300], "expected": "A readable .xlsx workbook"}]}) from exc
+        # Prefer the named sheet so a workbook may keep its own cover/index
+        # sheets alongside the device list.
+        if ASSET_DOCUMENT_SHEET_NAME in workbook.sheetnames:
+            sheet = workbook[ASSET_DOCUMENT_SHEET_NAME]
+        else:
+            sheet = workbook[workbook.sheetnames[0]] if workbook.sheetnames else None
+        if sheet is None:
+            raise HTTPException(400, {"message": "The spreadsheet has no sheets", "errors": []})
+        return [[cell for cell in row] for row in sheet.iter_rows(values_only=True)]
+    if suffix in {".xls"}:
+        raise HTTPException(400, {"message": "Only .csv and .xlsx are supported", "errors": [
+            {"row": 0, "column": "-", "problem": "Legacy .xls workbooks are not supported",
+             "expected": "Upload a .csv or re-save as .xlsx"}]})
     try:
         text = content.decode("utf-8-sig")
     except UnicodeDecodeError as exc:
-        raise HTTPException(400, "Policy file must be a UTF-8 CSV") from exc
+        raise HTTPException(400, {"message": "The file must be UTF-8 encoded CSV or a .xlsx workbook", "errors": [
+            {"row": 0, "column": "-", "problem": "The file is not valid UTF-8 text",
+             "expected": "A UTF-8 .csv file, or a .xlsx workbook"}]}) from exc
+    return [row for row in csv.reader(io.StringIO(text))]
 
-    reader = csv.DictReader(io.StringIO(text))
-    headers = {(header or "").strip().lower() for header in (reader.fieldnames or [])}
-    if not {"device_identifier", "criticality"}.issubset(headers):
-        raise HTTPException(400, "CSV must contain device_identifier and criticality columns")
 
-    updated, not_found, invalid = [], [], []
-    for row in reader:
-        normalized = {(key or "").strip().lower(): (value or "").strip() for key, value in row.items() if key}
-        identifier = normalized.get("device_identifier", "")
-        criticality = normalized.get("criticality", "").lower()
-        if not identifier: continue
-        if criticality not in ASSET_CRITICALITY_VALUES:
-            invalid.append(identifier); continue
-        asset = repository.find_asset_by_identifier(identifier)
-        if not asset:
-            not_found.append(identifier); continue
-        repository.set_csv_criticality(asset["asset_id"], criticality)
-        result = repository.find_asset_by_identifier(identifier)
-        hub.publish("ASSET_UPDATED", result)
-        updated.append(identifier)
+@app.post("/api/v1/risk/policy/asset-document")
+async def upload_asset_document(file: UploadFile = File(...)):
+    """Upload the single asset document that drives Layer 8 ranking.
 
-    if updated: recalculate_organization_risk()
-    return {"updated": len(updated), "not_found": not_found, "invalid_criticality": invalid}
+    The whole file is validated: if any row is wrong the upload is rejected
+    and every problem is returned, so nothing partially replaces the document
+    already in force.
+    """
+    content = await file.read()
+    rows = _decode_asset_document(file.filename, content)
+    valid_rows, errors = parse_asset_document(rows)
+    if errors:
+        raise HTTPException(400, {
+            "message": "The asset document was rejected. Nothing was uploaded - fix the rows below and try again.",
+            "errors": errors,
+        })
+    result = repository.save_asset_document(valid_rows)
+    current = repository.get_current_ranking()
+    return {
+        "rows_uploaded": result["row_count"],
+        "uploaded_at": result["uploaded_at"].isoformat(),
+        "ranking_stale": current["ranking_stale"],
+    }
 
 
 @app.get("/api/v1/scan/activity")
@@ -385,8 +374,275 @@ def activity(limit: int = Query(8, ge=1, le=200), scan_id: str | None = None): r
 def history(): return {"data": repository.scan_history()}
 
 
+@app.get("/api/v1/networks")
+def list_networks():
+    """Every detected VLAN/network as its own entry, with a reachability verdict.
+
+    One row per VLAN, straight from the cross-network detection module so the
+    scannable/not-reachable decision the UI disables a button on is the same
+    decision the scan endpoint enforces.
+    """
+    rows = repository.list_networks()
+    for row in rows:
+        scannable, reason = cross_network.network_is_scannable(row)
+        row["is_scannable"] = scannable
+        row["reachability_reason"] = reason
+    from .config import settings
+    return {"data": {
+        "networks": rows,
+        "summary": cross_network.summarize_networks(rows),
+        "targets": cross_network.discover_candidates(),
+        "freshness_window_minutes": settings.scan_freshness_window_minutes,
+    }}
+
+
+@app.post("/api/v1/networks/{network_id}/approve")
+def approve_network(network_id: str, payload: dict):
+    """Approve a network for automatic inclusion in scans."""
+    network = repository.get_network(network_id)
+    if not network:
+        raise HTTPException(404, "Network not found")
+    approved_by = payload.get("approved_by", "unknown")
+    reason = payload.get("reason")
+    result = repository.approve_network(network_id, approved_by, reason)
+    return {"data": result}
+
+
+@app.post("/api/v1/networks/{network_id}/revoke")
+def revoke_network(network_id: str, payload: dict):
+    """Revoke approval for a network."""
+    network = repository.get_network(network_id)
+    if not network:
+        raise HTTPException(404, "Network not found")
+    approved_by = payload.get("approved_by", "unknown")
+    reason = payload.get("reason")
+    result = repository.revoke_network(network_id, approved_by, reason)
+    return {"data": result}
+
+
+@app.get("/api/v1/networks/{network_id}/approvals")
+def get_network_approvals(network_id: str):
+    """Get approval history for a network."""
+    network = repository.get_network(network_id)
+    if not network:
+        raise HTTPException(404, "Network not found")
+    approvals = repository.get_network_approvals(network_id)
+    return {"data": approvals}
+
+
+@app.post("/api/v1/networks/detect")
+def detect_networks():
+    """Re-run detection against every classified router/switch in inventory.
+
+    Two layers, both read-only SNMP: per-VLAN direct detection, then multi-router
+    traversal of the routing tables. Takes no router IP, gateway or any other
+    per-run input - the targets are devices a previous scan already classified.
+    """
+    result = cross_network.detect_all()
+    repository.attribute_assets_to_networks()
+    return {"data": result}
+
+
+@app.post("/api/v1/networks/{network_id}/scan", status_code=202)
+def scan_network_by_id(network_id: str, payload: NetworkScanRequest):
+    """Scan exactly one VLAN's subnet, after explicit authorization.
+
+    Refuses outright - and records the refusal - when the VLAN was never
+    reachable or authorization was not confirmed. An unreachable VLAN is never
+    attempted, so a "scanned, 0 devices found" result can only ever mean the
+    network was genuinely scanned and genuinely had no answering hosts.
+    """
+    network = repository.get_network(network_id)
+    if not network:
+        raise HTTPException(404, "Network not found")
+
+    scannable, reason = cross_network.network_is_scannable(network)
+    if not scannable:
+        request = repository.create_network_scan_request(
+            network_id, "unknown", payload.confirmed_authorization, "rejected", reason)
+        raise HTTPException(409, {"message": reason, "request_id": request["request_id"]})
+
+    if not payload.confirmed_authorization:
+        message = ("Scanning another network requires confirming you are authorized to "
+                   "scan it. No probe was sent.")
+        request = repository.create_network_scan_request(
+            network_id, "unknown", False, "rejected", message)
+        raise HTTPException(403, {"message": message, "request_id": request["request_id"]})
+
+    cidr = cross_network.record_cidr(network)
+    session = repository.create_session(
+        cidr, payload.durationMinutes, source="cross_network", network_id=network_id)
+    request = repository.create_network_scan_request(
+        network_id, "unknown", True, "accepted")
+    try:
+        coordinator.start(session)
+    except ScanAlreadyRunning as exc:
+        repository.finish_session(session["id"], "FAILED", 0,
+                                  "Another scan was already running, so this one was never started.")
+        repository.finish_network_scan_request(
+            request["request_id"], "failed", rejection_reason="another scan was already running")
+        raise HTTPException(409, {
+            "message": "A scan is already running. Wait for it to finish, or stop it first.",
+            "running_session_id": exc.running_session_id,
+        }) from exc
+    repository.finish_network_scan_request(request["request_id"], "running", session_id=session["id"])
+    repository.mark_network_scanned(network_id, session_id=session["id"])
+    hub.publish("SESSION_STARTED", session)
+    return {"data": {"session": session, "request": request, "network": network_id}}
+
+
+@app.post("/api/v1/networks/scan-all", status_code=202)
+def scan_all_networks(payload: NetworkScanRequest):
+    """Scan all detected non-local scannable networks at once, after explicit authorization.
+
+    This scans each reachable network sequentially. If any network is not scannable,
+    it is skipped with a warning. The authorization confirmation applies to all networks.
+    """
+    networks = repository.list_networks()
+    non_local_scannable = [
+        n for n in networks
+        if not n.get("is_local") and cross_network.network_is_scannable(n)[0]
+    ]
+    
+    # Also include approved networks (which may be local or remote)
+    approved_networks = [
+        n for n in networks
+        if n.get("approved") and cross_network.network_is_scannable(n)[0]
+    ]
+    
+    # Combine and deduplicate
+    all_networks = {}
+    for n in non_local_scannable + approved_networks:
+        all_networks[n["network_id"]] = n
+    networks_to_scan = list(all_networks.values())
+
+    if not networks_to_scan:
+        raise HTTPException(409, {"message": "No scannable networks detected (including approved)."})
+
+    if not payload.confirmed_authorization:
+        message = ("Scanning all networks requires confirming you are authorized to "
+                   "scan each of them. No probes were sent.")
+        raise HTTPException(403, {"message": message})
+
+    results = []
+    for network in networks_to_scan:
+        cidr = cross_network.record_cidr(network)
+        session = repository.create_session(
+            cidr, payload.durationMinutes, source="cross_network", network_id=network["network_id"])
+        request = repository.create_network_scan_request(
+            network["network_id"], "unknown", True, "accepted")
+        try:
+            coordinator.start(session)
+        except ScanAlreadyRunning as exc:
+            repository.finish_session(session["id"], "FAILED", 0,
+                                      "Another scan was already running, so this one was never started.")
+            repository.finish_network_scan_request(
+                request["request_id"], "failed", rejection_reason="another scan was already running")
+            results.append({
+                "network_id": network["network_id"],
+                "cidr": cidr,
+                "status": "error",
+                "message": "Another scan was already running",
+                "running_session_id": exc.running_session_id,
+            })
+            break
+        repository.finish_network_scan_request(request["request_id"], "running", session_id=session["id"])
+        repository.mark_network_scanned(network["network_id"], session_id=session["id"])
+        hub.publish("SESSION_STARTED", session)
+        results.append({
+            "network_id": network["network_id"],
+            "cidr": cidr,
+            "session_id": session["id"],
+            "status": "started",
+        })
+
+    return {"data": {"results": results, "total": len(networks_to_scan)}}
+
+
+@app.post("/api/v1/scan/start-all", status_code=202)
+def start_all_networks_scan(payload: NetworkScanRequest):
+    """Start a scan covering all directly-attached networks plus approved networks.
+
+    This is the "Start Scan Session" button: one scan that covers every network
+    the host is directly attached to (every active adapter) plus every detected
+    routed network the administrator has approved.
+    """
+    # Get all directly attached networks
+    local_networks = connected_ipv4_networks()
+    if not local_networks:
+        raise HTTPException(409, {"message": "No active network adapters found."})
+    
+    # Get approved networks
+    approved_networks = repository.get_approved_networks()
+    
+    # Build list of unique subnets to scan
+    subnets_to_scan = []
+    network_ids = []
+    
+    # Add local networks
+    for net in local_networks:
+        cidr = str(net)
+        subnets_to_scan.append(cidr)
+        network_ids.append(None)  # local networks don't have network_id
+    
+    # Add approved networks
+    for net in approved_networks:
+        cidr = cross_network.record_cidr(net)
+        if cidr and cidr not in subnets_to_scan:
+            subnets_to_scan.append(cidr)
+            network_ids.append(net["network_id"])
+    
+    if not payload.confirmed_authorization:
+        message = ("Scanning all attached and approved networks requires confirming "
+                   "you are authorized. No probes were sent.")
+        raise HTTPException(403, {"message": message})
+
+    results = []
+    for cidr, network_id in zip(subnets_to_scan, network_ids):
+        session = repository.create_session(
+            cidr, payload.durationMinutes, source="multi_network", network_id=network_id)
+        if network_id:
+            request = repository.create_network_scan_request(
+                network_id, "unknown", True, "accepted")
+        try:
+            coordinator.start(session)
+        except ScanAlreadyRunning as exc:
+            repository.finish_session(session["id"], "FAILED", 0,
+                                      "Another scan was already running, so this one was never started.")
+            if network_id:
+                repository.finish_network_scan_request(
+                    request["request_id"], "failed", rejection_reason="another scan was already running")
+            results.append({
+                "cidr": cidr,
+                "network_id": network_id,
+                "status": "error",
+                "message": "Another scan was already running",
+                "running_session_id": exc.running_session_id,
+            })
+            break
+        if network_id:
+            repository.finish_network_scan_request(request["request_id"], "running", session_id=session["id"])
+            repository.mark_network_scanned(network_id, session_id=session["id"])
+        hub.publish("SESSION_STARTED", session)
+        results.append({
+            "cidr": cidr,
+            "network_id": network_id,
+            "session_id": session["id"],
+            "status": "started",
+        })
+
+    return {"data": {"results": results, "total": len(subnets_to_scan)}}
+
+
 @app.get("/api/v1/scan/sessions")
 def sessions(): return {"data": repository.list_sessions()}
+
+
+@app.get("/api/v1/scan/sessions/latest")
+def latest_completed_session():
+    """Return the latest completed scan session."""
+    session = repository.get_latest_completed_session()
+    return {"data": session}
 
 
 @app.get("/api/v1/scan/sessions/{session_id}/checks")
@@ -405,8 +661,39 @@ def start_session(payload: ScanStart):
     try: subnet = validate_authorized_subnet(payload.subnet)
     except ValueError as exc: raise HTTPException(400, str(exc)) from exc
     session = repository.create_session(subnet, payload.durationMinutes)
-    coordinator.start(session); hub.publish("SESSION_STARTED", session)
+    try: coordinator.start(session)
+    except ScanAlreadyRunning as exc:
+        # Do not leave the rejected attempt behind as a second RUNNING row.
+        repository.finish_session(session["id"], "FAILED", 0,
+                                  "Another scan was already running, so this one was never started.")
+        raise HTTPException(409, {
+            "message": "A scan is already running. Wait for it to finish, or stop it first.",
+            "running_session_id": exc.running_session_id,
+        }) from exc
+    hub.publish("SESSION_STARTED", session)
     return session
+
+
+@app.post("/api/v1/scan/sessions/reset")
+def reset_scan_status():
+    """Safety valve: clear anything that is not genuinely running.
+
+    The coordinator reaps stale scans on its own, but if a wedged scan ever
+    survives that, this clears the in-memory and database state so the team is
+    never blocked without a way to recover.
+    """
+    cleared = coordinator.reap_stale()
+    with connection() as conn:
+        remaining = conn.execute(
+            "SELECT count(*) AS n FROM scan_sessions WHERE status='RUNNING'"
+        ).fetchone()["n"]
+    return {
+        "data": {
+            "cleared": cleared,
+            "running_sessions": remaining,
+            "stale_after_seconds": coordinator.stale_after_seconds,
+        }
+    }
 
 
 @app.post("/api/v1/scan/sessions/{session_id}/stop")

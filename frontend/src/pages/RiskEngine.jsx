@@ -1,20 +1,35 @@
 import { useState } from 'react'
-import { BrainCircuit, Flame } from 'lucide-react'
+import { BrainCircuit, ChevronDown, ChevronRight, Flame } from 'lucide-react'
 import EmptyState from '../components/EmptyState'
-import { uploadRiskPolicy } from '../api/client'
 import MetricCard from '../components/MetricCard'
-import { useRiskAssets, useRiskSummary, useUpdateCriticality } from '../hooks/useRisk'
+import { useCalculateRisk, useRiskAssets, useRiskReadiness, useRiskSummary, useUploadAssetDocument } from '../hooks/useRisk'
+import { missingFromScanAssets, notInDocumentAssets, rankedAssets } from '../utils/riskAssets'
 
 const BAND_TONE = { critical: 'pill--danger', high: 'pill--danger', elevated: 'pill--warn', moderate: 'pill--warn', low: 'pill--ok' }
-const CRITICALITY_OPTIONS = ['low', 'normal', 'high', 'critical']
+const MATCH_FLAG_LABEL = { ip: 'matched by IP', hostname: 'matched by hostname', conflict: 'conflict — review this row' }
+
+const REQUIRED_COLUMNS = ['device_name', 'ip_address', 'purpose', 'criticality_category']
+const ALLOWED_CATEGORIES = [
+  'Test/temporary device',
+  'Printer/non-critical peripheral',
+  'Standard staff workstation',
+  'Administration/privileged workstation',
+  'Business application/server',
+  'Identity, finance, student/medical records, critical core service',
+]
+
+// Wording is fixed by the backend (READINESS_BLOCKED_MESSAGE) and repeated here
+// so the tooltip, the inline line and a click on the disabled button all agree.
+const BLOCKED_MESSAGE = 'Upload the asset document first. Ranking runs only after it is uploaded.'
 
 function ScoreBar({ label, value, max = 100 }) {
-  const pct = Math.max(0, Math.min(100, (value / max) * 100))
+  const displayValue = value == null ? '—' : value
+  const pct = value == null ? 0 : Math.max(0, Math.min(100, (value / max) * 100))
   return (
     <div>
       <div className="flex justify-between text-[10px] text-[var(--text-muted)] mb-0.5">
         <span>{label}</span>
-        <span>{value}</span>
+        <span>{displayValue}</span>
       </div>
       <div className="h-1.5 rounded-full bg-[var(--bg-surface-2)] overflow-hidden">
         <div className="h-full bg-[var(--accent)]" style={{ width: `${pct}%` }} />
@@ -23,26 +38,114 @@ function ScoreBar({ label, value, max = 100 }) {
   )
 }
 
+function AssetCard({ asset }) {
+  return (
+    <article className="card">
+      <div className="flex items-start justify-between gap-4 flex-wrap">
+        <div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="pill pill--info">
+              {asset.priority_rank ? `Priority #${asset.priority_rank} of ${asset.priority_total}` : 'Not yet ranked'}
+            </span>
+            <span className="text-base font-semibold text-[var(--text-primary)]">
+              {asset.hostname || asset.device_identifier || 'Unknown'}
+            </span>
+            {asset.label && <span className={`pill ${BAND_TONE[asset.risk_band] || 'pill--info'}`}>{asset.label}</span>}
+            {asset.has_kev && <span className="pill pill--danger inline-flex items-center gap-1"><Flame size={11} />Known Exploited</span>}
+            {asset.match_flag && <span className={`pill ${asset.match_flag === 'conflict' ? 'pill--warn' : 'pill--info'}`}>{MATCH_FLAG_LABEL[asset.match_flag]}</span>}
+          </div>
+          <div className="text-xs text-[var(--text-muted)] mt-1.5 mono">{asset.ip_address} · {asset.device_type}</div>
+        </div>
+        <div className="text-right">
+          <div className="text-2xl font-semibold text-[var(--text-primary)]">{asset.risk_score ?? 'Not yet ranked'}</div>
+          <div className="text-[10px] uppercase text-[var(--text-muted)]">prioritization index / 100</div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-3 gap-4 mt-4">
+        <ScoreBar label="Max CVSS" value={asset.max_cvss} max={10} />
+        <ScoreBar label="Max EPSS %" value={Math.round((asset.max_epss || 0) * 100)} />
+        <ScoreBar label="Exposure (network-wide)" value={asset.exposure} />
+      </div>
+
+      {/* Read-only: organizational criticality now comes from the uploaded
+          asset document, never from a dropdown on this card. */}
+      <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
+        <div>
+          <span className="block text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-0.5">Criticality (15%, from your document)</span>
+          <span className="text-[var(--text-secondary)]">{asset.criticality_label || '—'}</span>
+        </div>
+        <div>
+          <span className="block text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-0.5">Purpose</span>
+          <span className="text-[var(--text-secondary)]">{asset.purpose || '—'}</span>
+        </div>
+      </div>
+      {asset.document_note && (
+        <div className="mt-2 text-xs text-[var(--warning)]">{asset.document_note}</div>
+      )}
+
+      <div className="flex justify-between mt-3 text-[11px] text-[var(--text-muted)]">
+        <span>{asset.active_vuln_count} active CVE{asset.active_vuln_count === 1 ? '' : 's'}</span>
+        <span>{asset.recommendations?.length || 0} recommendation{asset.recommendations?.length === 1 ? '' : 's'}</span>
+      </div>
+      <div className="mt-3 pt-3 border-t border-[var(--border)] text-xs text-[var(--text-secondary)]">
+        <span className="font-medium text-[var(--text-primary)]">Recommendations: </span>{asset.recommendations?.join(' ') || 'No urgent action required; continue routine monitoring.'}
+      </div>
+    </article>
+  )
+}
+
 export default function RiskEngine() {
-  const { data: assets, isLoading, refetch: refetchAssets } = useRiskAssets()
+  const { data: assets, isLoading } = useRiskAssets()
   const { data: summary, refetch: refetchSummary } = useRiskSummary()
-  const updateCriticality = useUpdateCriticality()
+  const { data: readiness, refetch: refetchReadiness } = useRiskReadiness()
+  const calculateRisk = useCalculateRisk()
+  const uploadDocument = useUploadAssetDocument()
 
-  const [networkFile, setNetworkFile] = useState(null)
-  const [uploadStatus, setUploadStatus] = useState(null)
+  const [file, setFile] = useState(null)
+  const [uploadErrors, setUploadErrors] = useState([])
+  const [uploadSuccess, setUploadSuccess] = useState(null)
+  const [blockedNotice, setBlockedNotice] = useState(false)
+  const [showMissing, setShowMissing] = useState(false)
+  const [showExplanation, setShowExplanation] = useState(false)
 
-  async function handleNetworkPolicyUpload() {
-    if (!networkFile) return
-    setUploadStatus({ state: 'uploading', message: 'Uploading network context policy...' })
+  const ranked = rankedAssets(assets)
+  const notInDocument = notInDocumentAssets(assets)
+  const missingFromScan = missingFromScanAssets(assets)
+  const readyToRank = Boolean(readiness?.ready_to_rank)
+  const isPending = calculateRisk.isPending
+  const calculateDisabled = !readyToRank || isPending
+
+  async function handleUpload() {
+    if (!file) return
+    setUploadErrors([])
+    setUploadSuccess(null)
     try {
-      const data = await uploadRiskPolicy('/risk/policy/network-context', networkFile)
-      await Promise.all([refetchAssets(), refetchSummary()])
-      setUploadStatus({ state: 'success', message: `${data.rows_uploaded} row(s) uploaded at ${new Date(data.updated_at).toLocaleString()}.` })
-    } catch (err) {
-      const detail = err.response?.data?.detail
-      const errors = detail?.errors?.map((item) => `Row ${item.row}: ${item.message}`).join(' ') || detail?.message || err.message
-      setUploadStatus({ state: 'error', message: errors })
+      const result = await uploadDocument.mutateAsync(file)
+      setUploadSuccess({
+        rows: result.rows_uploaded,
+        at: new Date(result.uploaded_at).toLocaleString(),
+      })
+      setFile(null)
+      await Promise.all([refetchReadiness(), refetchSummary()])
+    } catch (error) {
+      // Never a generic "Upload failed": render the backend's per-row problems.
+      setUploadErrors(error.validationErrors?.length
+        ? error.validationErrors
+        : [{ row: 0, column: '-', problem: error.validationMessage || error.message, expected: '-' }])
     }
+  }
+
+  // The button is genuinely disabled, so clicking it cannot fire; the wrapper
+  // still surfaces the reason on click rather than leaving a dead control.
+  function handleCalculateClick() {
+    if (!readyToRank) {
+      setBlockedNotice(true)
+      return
+    }
+    if (isPending) return
+    setBlockedNotice(false)
+    calculateRisk.mutate()
   }
 
   return (
@@ -52,38 +155,107 @@ export default function RiskEngine() {
         <p className="text-sm text-[var(--text-muted)]">{summary?.index_label || 'ETSNTECH prototype prioritization index'} — one score per asset, combining severity, likelihood, known exploitation, network exposure, and organizational criticality</p>
       </div>
 
-      <div className="card border-[var(--accent-border)] bg-[linear-gradient(135deg,var(--accent-bg),var(--bg-surface))]">
-        <div className="flex gap-3">
-          <BrainCircuit size={19} className="text-[var(--accent)] shrink-0 mt-0.5" />
-          <div>
-            <div className="text-sm font-semibold text-[var(--text-primary)]">How this score is built</div>
-            <p className="text-xs text-[var(--text-secondary)] leading-relaxed mt-1">
-              Each asset gets a 0-100 <strong>{summary?.index_label || 'ETSNTECH prototype prioritization index'}</strong>: <strong>severity</strong> (max
-              CVSS of its active CVEs x10, 30%) + <strong>exploit likelihood</strong> (max EPSS score x100, 20%) + <strong>known
-              exploitation</strong> (100 if any active CVE is in CISA KEV, else 0, 20%) + <strong>network exposure</strong> (which
-              segment it sits on, 15%) + <strong>asset criticality</strong> (how much it matters to your organization, 15%). Exposure and
-              criticality are set by you below — nothing in a scan can tell the system that a device is your internet-facing file server
-              rather than an isolated lab printer. A confirmed CISA KEV match always enforces a minimum score of 80, regardless of the
-              math, matching how KEV outranks everything else in this app. This is a prioritization heuristic, not a probability of
-              breach. Every asset also gets an explicit priority rank, so "single risk score and priority" is literal, not just an
-              implied sort order.
-            </p>
-            <div className="card border-[var(--border)] bg-[var(--bg-surface)] p-4 mt-4">
-              <div className="text-sm font-semibold text-[var(--text-primary)] mb-1">Network context policy</div>
-              <p className="text-xs text-[var(--text-secondary)] mb-3">CSV columns: subnet_cidr, context_label, notes</p>
-              <div className="flex items-center gap-3 flex-wrap">
-                <label className="inline-flex items-center cursor-pointer bg-[var(--bg-surface-2)] border border-[var(--border)] hover:border-[var(--accent)] text-[var(--text-primary)] text-xs font-medium px-3 py-2 rounded-[var(--radius-sm)]">
-                  Choose CSV file
-                  <input type="file" accept=".csv,text/csv" className="sr-only" onChange={(event) => setNetworkFile(event.target.files?.[0] || null)} />
-                </label>
-                <span className="text-xs text-[var(--text-muted)] truncate max-w-64">{networkFile?.name || 'No file selected'}</span>
-                <button type="button" onClick={handleNetworkPolicyUpload} disabled={!networkFile || uploadStatus?.state === 'uploading'} className="bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-white text-xs font-medium px-3 py-2 rounded-[var(--radius-sm)]">
-                  {uploadStatus?.state === 'uploading' ? 'Uploading...' : 'Upload network policy'}
-                </button>
-              </div>
-              {uploadStatus && <p role={uploadStatus.state === 'error' ? 'alert' : undefined} className={`text-xs mt-2 ${uploadStatus.state === 'error' ? 'text-[var(--danger)]' : 'text-[var(--text-primary)]'}`}>{uploadStatus.message}</p>}
-            </div>
+      <div className="card flex flex-col gap-3">
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="flex items-center gap-2">
+            <BrainCircuit size={16} className="text-[var(--accent)]" />
+            <span className="text-sm font-semibold text-[var(--text-primary)]">Asset document</span>
           </div>
+          <button
+            type="button"
+            onClick={() => setShowExplanation((open) => !open)}
+            aria-expanded={showExplanation}
+            className="text-xs text-[var(--accent)] hover:underline"
+          >
+            {showExplanation ? 'Hide how this is calculated' : 'Learn how this is calculated'}
+          </button>
+        </div>
+        <p className="text-xs text-[var(--text-secondary)]">
+          Upload one document listing every device. It replaces the previous document entirely, and it is the
+          only source of organizational criticality — nothing is marked device-by-device.
+        </p>
+        <div className="text-xs text-[var(--text-secondary)]">
+          <span className="block text-[10px] uppercase tracking-wider text-[var(--text-muted)] mb-1">Required columns</span>
+          <span className="mono">{REQUIRED_COLUMNS.join(' · ')}</span>
+          <span className="block mt-1 text-[10px] uppercase tracking-wider text-[var(--text-muted)]">Allowed criticality_category values</span>
+          <ul className="list-disc pl-5 mt-0.5">
+            {ALLOWED_CATEGORIES.map((value) => <li key={value}>{value}</li>)}
+          </ul>
+          <span className="block mt-1 text-[var(--text-muted)]">
+            Accepts .csv or .xlsx (sheet “Device Criticality”, or the first sheet). Each row needs an ip_address or a device_name.
+          </span>
+        </div>
+        <div className="flex items-center gap-3 flex-wrap">
+          <label className="inline-flex items-center cursor-pointer bg-[var(--bg-surface-2)] border border-[var(--border)] hover:border-[var(--accent)] text-[var(--text-primary)] text-xs font-medium px-3 py-2 rounded-[var(--radius-sm)]">
+            Choose file
+            <input
+              type="file"
+              accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              className="sr-only"
+              onChange={(event) => { setFile(event.target.files?.[0] || null); setUploadErrors([]); setUploadSuccess(null) }}
+            />
+          </label>
+          <span className="text-xs text-[var(--text-muted)] truncate max-w-64">{file?.name || 'No file selected'}</span>
+          <button
+            type="button"
+            onClick={handleUpload}
+            disabled={!file || uploadDocument.isPending}
+            className="bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 text-white text-xs font-medium px-3 py-2 rounded-[var(--radius-sm)]"
+          >
+            {uploadDocument.isPending ? 'Uploading...' : 'Upload asset document'}
+          </button>
+        </div>
+
+        {uploadSuccess && (
+          <p role="status" className="text-xs text-[var(--text-primary)]">
+            Uploaded {uploadSuccess.rows} device row{uploadSuccess.rows === 1 ? '' : 's'} at {uploadSuccess.at}.
+            Press Calculate Ranking to apply it — nothing is recalculated automatically.
+          </p>
+        )}
+        {uploadErrors.length > 0 && (
+          <div role="alert" className="text-xs text-[var(--danger)]">
+            <p className="font-medium mb-1">The document was rejected — nothing was uploaded:</p>
+            <ul className="list-disc pl-5 space-y-0.5">
+              {uploadErrors.map((problem, index) => (
+                <li key={`${problem.row}-${problem.column}-${index}`}>
+                  {problem.row ? `Row ${problem.row}, ${problem.column}: ` : ''}
+                  {problem.problem}
+                  {problem.expected && problem.expected !== '-' ? <span className="text-[var(--text-muted)]"> Expected: {problem.expected}</span> : null}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        <div className="pt-3 border-t border-[var(--border)] flex flex-col gap-2">
+          <div className="text-xs text-[var(--text-secondary)]">
+            {readiness
+              ? readiness.asset_document_uploaded
+                ? `✓ Asset document uploaded${readiness.uploaded_at ? ` at ${new Date(readiness.uploaded_at).toLocaleString()}` : ''}`
+                : `⚠ ${BLOCKED_MESSAGE}`
+              : 'Checking readiness...'}
+          </div>
+          <div className="w-fit" title={calculateDisabled && !isPending ? BLOCKED_MESSAGE : undefined}>
+            <button
+              type="button"
+              disabled={calculateDisabled}
+              onClick={handleCalculateClick}
+              className="w-fit bg-[var(--accent)] hover:bg-[var(--accent-hover)] disabled:opacity-50 disabled:cursor-not-allowed text-white text-xs font-medium px-3 py-2 rounded-[var(--radius-sm)]"
+            >
+              {isPending ? 'Calculating...' : 'Calculate Ranking'}
+            </button>
+          </div>
+          {calculateDisabled && !isPending && <div className="text-xs text-[var(--warning)]">{BLOCKED_MESSAGE}</div>}
+          {blockedNotice && <div role="alert" className="text-xs text-[var(--warning)]">{BLOCKED_MESSAGE}</div>}
+          {summary?.ranked_at
+            ? <div className="text-xs text-[var(--text-muted)]">Last ranked: {new Date(summary.ranked_at).toLocaleString()}</div>
+            : <div className="text-xs text-[var(--text-muted)]">Not yet ranked</div>}
+          {summary?.ranking_stale && <div className="text-xs text-[var(--warning)]">Ranking may be outdated - recalculate</div>}
+          {calculateRisk.isError && (
+            <div role="alert" className="text-xs text-[var(--danger)]">
+              {calculateRisk.error?.response?.data?.detail?.message || calculateRisk.error?.message}
+            </div>
+          )}
         </div>
       </div>
 
@@ -95,53 +267,50 @@ export default function RiskEngine() {
         <MetricCard label="KEV matches" value={summary?.kev_matches} sub="confirmed exploited" tone="danger" />
       </div>
 
-      {!isLoading && (!assets || assets.length === 0) ? (
-        <div className="card"><EmptyState icon={BrainCircuit} title="No assets to score yet" description="Run a network scan first — this layer scores every known asset once it exists." /></div>
+      {!isLoading && ranked.length === 0 && notInDocument.length === 0 ? (
+        <div className="card">
+          <EmptyState
+            icon={BrainCircuit}
+            title="No ranking yet"
+            description="Upload the asset document and press Calculate Ranking — this layer scores every device seen in the last 24 hours."
+          />
+        </div>
       ) : (
         <div className="flex flex-col gap-3">
-          {(assets || []).map((a) => (
-            <article key={a.asset_id} className="card">
-              <div className="flex items-start justify-between gap-4 flex-wrap">
-                <div>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <span className="pill pill--info">Priority #{a.priority_rank} of {a.priority_total}</span>
-                    <span className="text-base font-semibold text-[var(--text-primary)]">{a.hostname || a.device_identifier || 'Unknown'}</span>
-                    <span className={`pill ${BAND_TONE[a.risk_band] || 'pill--info'}`}>{a.label}</span>
-                    {a.has_kev && <span className="pill pill--danger inline-flex items-center gap-1"><Flame size={11} />Known Exploited</span>}
-                  </div>
-                  <div className="text-xs text-[var(--text-muted)] mt-1.5 mono">{a.ip_address} · {a.device_type}</div>
-                </div>
-                <div className="text-right">
-                  <div className="text-2xl font-semibold text-[var(--text-primary)]">{a.risk_score}</div>
-                  <div className="text-[10px] uppercase text-[var(--text-muted)]">prioritization index / 100</div>
-                </div>
-              </div>
+          {missingFromScan.length > 0 && (
+            <div role="status" className="card border-[var(--accent-border)] bg-[var(--accent-bg)]">
+              <button
+                type="button"
+                onClick={() => setShowMissing((open) => !open)}
+                aria-expanded={showMissing}
+                className="flex items-center gap-2 text-xs font-medium text-[var(--text-primary)] w-full text-left"
+              >
+                {showMissing ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                {missingFromScan.length} device{missingFromScan.length === 1 ? '' : 's'} in your document were not found on the network
+              </button>
+              {showMissing && (
+                <ul className="mt-2 pl-6 text-xs text-[var(--text-secondary)] list-disc space-y-0.5">
+                  {missingFromScan.map((item) => (
+                    <li key={`${item.device_name || ''}-${item.ip_address || ''}`}>
+                      <span className="font-medium text-[var(--text-primary)]">{item.device_name || item.ip_address}</span>
+                      {item.ip_address && item.device_name ? ` (${item.ip_address})` : ''}
+                      {item.purpose ? ` — ${item.purpose}` : ''}
+                      <span className="block text-[var(--text-muted)]">{item.note}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
 
-              <div className="grid grid-cols-4 gap-4 mt-4">
-                <ScoreBar label="Max CVSS" value={a.max_cvss} max={10} />
-                <ScoreBar label="Max EPSS %" value={Math.round((a.max_epss || 0) * 100)} />
-                <ScoreBar label={`Exposure${a.exposure_unmapped ? ' (unmapped)' : ''}`} value={a.exposure} />
-                <div>
-                  <label className="block text-[10px] text-[var(--text-muted)] mb-0.5">Criticality (15%, set by you)</label>
-                  <select
-                    value={a.criticality}
-                    onChange={(event) => updateCriticality.mutate({ assetId: a.asset_id, criticality: event.target.value })}
-                    className="w-full bg-[var(--bg-surface-2)] border border-[var(--border)] rounded-[var(--radius-sm)] px-2 py-1 text-xs text-[var(--text-primary)]"
-                  >
-                    {CRITICALITY_OPTIONS.map((c) => <option key={c} value={c}>{c[0].toUpperCase() + c.slice(1)}</option>)}
-                  </select>
-                </div>
-              </div>
+          {ranked.map((asset) => <AssetCard key={asset.asset_id} asset={asset} />)}
 
-              <div className="flex justify-between mt-3 text-[11px] text-[var(--text-muted)]">
-                <span>{a.active_vuln_count} active CVE{a.active_vuln_count === 1 ? '' : 's'}</span>
-                <span>{a.recommendations?.length || 0} recommendation{a.recommendations?.length === 1 ? '' : 's'}</span>
-              </div>
-              <div className="mt-3 pt-3 border-t border-[var(--border)] text-xs text-[var(--text-secondary)]">
-                <span className="font-medium text-[var(--text-primary)]">Recommendations: </span>{a.recommendations?.join(' ' ) || 'No urgent action required; continue routine monitoring.'}
-              </div>
-            </article>
-          ))}
+          {notInDocument.length > 0 && (
+            <>
+              <h2 className="text-sm font-semibold text-[var(--text-primary)] mt-2">Scanned devices not in your document</h2>
+              {notInDocument.map((asset) => <AssetCard key={asset.asset_id} asset={asset} />)}
+            </>
+          )}
         </div>
       )}
     </div>

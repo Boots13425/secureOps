@@ -6,13 +6,13 @@ export function useDevices(filters = {}) {
   return useQuery({ queryKey: ['devices', filters], queryFn: () => getDevices(filters) })
 }
 
-// "What's here right now" — devices seen in the most recently completed scan
-// only, as opposed to the full historic inventory (see useDevices()/History page).
+// "What's here right now" — devices that answered a direct probe in the
+// latest completed scan session. Never shows missing, stale, or ARP-only entries.
 export function useCurrentDevices() {
   const { session: latestCompleted, isLoading: sessionsLoading } = useLatestCompletedSession()
   const devices = useQuery({
     queryKey: ['devices', { scanId: latestCompleted?.id }],
-    queryFn: () => getDevices({ scanId: latestCompleted.id }),
+    queryFn: () => getDevices({ scanId: latestCompleted.id, directProbeOnly: true }),
     enabled: Boolean(latestCompleted?.id),
   })
   return {

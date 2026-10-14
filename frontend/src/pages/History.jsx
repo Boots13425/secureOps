@@ -30,7 +30,7 @@ export default function History() {
           </select>
           <select aria-label="Filter by device type" value={deviceType} onChange={(event) => setDeviceType(event.target.value)} className="bg-[var(--bg-surface)] border border-[var(--border)] rounded-[var(--radius-sm)] px-3 py-2 text-sm text-[var(--text-primary)] outline-none">
             <option value="">All device types</option>
-            {['PC', 'server', 'router', 'printer', 'phone', 'unknown'].map((value) => <option key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</option>)}
+            {['PC', 'server', 'router', 'switch', 'network device', 'printer', 'phone', 'unknown'].map((value) => <option key={value} value={value}>{value[0].toUpperCase() + value.slice(1)}</option>)}
           </select>
         </div>
       </div>

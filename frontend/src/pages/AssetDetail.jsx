@@ -9,6 +9,7 @@ import SeverityPill from '../components/SeverityPill'
 import OsCell from '../components/OsCell'
 import EmptyState from '../components/EmptyState'
 import MetricCard from '../components/MetricCard'
+import { findRiskAsset } from '../utils/riskAssets'
 import { timeAgo } from '../utils/time'
 
 const BAND_TONE = { critical: 'pill--danger', high: 'pill--danger', elevated: 'pill--warn', moderate: 'pill--warn', low: 'pill--ok' }
@@ -26,7 +27,13 @@ export default function AssetDetail() {
   const { data: findings, isLoading: findingsLoading } = useDeviceFindings(assetId)
   const { data: riskAssets } = useRiskAssets()
   const openFindings = (findings || []).filter((f) => f.status === 'open')
-  const risk = (riskAssets || []).find((r) => r.asset_id === assetId)
+  // The endpoint returns grouped arrays, not a flat list — searching it
+  // directly threw "find is not a function". Also null (rather than undefined)
+  // so `risk && ...` below is a real test.
+  const risk = findRiskAsset(riskAssets, assetId)
+  // Only claim "not ranked" once the response has actually arrived, otherwise
+  // a freshly ranked device would flash the empty state during load.
+  const rankingLoaded = Boolean(riskAssets)
 
   if (isError) {
     return (
@@ -133,6 +140,21 @@ export default function AssetDetail() {
                 <div className="pt-3 border-t border-[var(--border)] text-xs text-[var(--text-secondary)]">
                   <span className="font-medium text-[var(--text-primary)]">Recommendation: </span>{risk.recommended_action}
                 </div>
+              </div>
+            </div>
+          )}
+
+          {rankingLoaded && !risk && (
+            <div>
+              <h2 className="text-sm font-semibold text-[var(--text-primary)] mb-3">Security posture — ETSNTECH prototype prioritization index</h2>
+              <div className="card">
+                <EmptyState
+                  icon={BrainCircuit}
+                  title="Device not yet ranked"
+                  description={riskAssets?.last_ranked_at
+                    ? 'This device was not in the most recent ranking. Re-run risk calculation to include newly discovered assets.'
+                    : 'Risk ranking has not been run yet. Run risk calculation to score this device.'}
+                />
               </div>
             </div>
           )}

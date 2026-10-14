@@ -1,1 +1,5 @@
 .env
+# Local virtual environment - never commit it
+.venv/
+venv/
+env/

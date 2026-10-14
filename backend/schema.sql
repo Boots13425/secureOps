@@ -440,3 +440,156 @@ CREATE TABLE IF NOT EXISTS risk_ranking_state (
   ranked_at timestamptz NOT NULL,
   ranking jsonb NOT NULL
 );
+
+-- Layer 8 asset document. The network is flat, so the per-subnet
+-- network_context_policy and the manual per-device criticality are no longer
+-- inputs: organizational criticality now comes from ONE uploaded document
+-- describing every device, and exposure is a single network-wide setting.
+-- The two legacy tables above are intentionally left in place (data is not
+-- dropped) but are no longer read by the risk engine.
+CREATE TABLE IF NOT EXISTS asset_document_uploads (
+  upload_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  uploaded_at timestamptz NOT NULL DEFAULT now(),
+  row_count integer NOT NULL
+);
+CREATE TABLE IF NOT EXISTS asset_document_rows (
+  row_id bigserial PRIMARY KEY,
+  upload_id uuid NOT NULL REFERENCES asset_document_uploads(upload_id) ON DELETE CASCADE,
+  row_number integer NOT NULL,
+  device_name text,
+  ip_address inet,
+  purpose text,
+  criticality_category text NOT NULL,
+  criticality_value integer NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_asset_document_rows_upload ON asset_document_rows(upload_id);
+-- The ranking is stored in real rows rather than a JSONB blob so the API can
+-- return strict priority order with a plain ORDER BY. Group 1 (ranked) and
+-- group 3 (not_in_document) share one ordering; ranks continue across the
+-- boundary so "priority number" means one thing across the whole result.
+CREATE TABLE IF NOT EXISTS risk_ranking_results (
+  result_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  asset_id uuid NOT NULL REFERENCES assets(asset_id) ON DELETE CASCADE,
+  priority_rank integer NOT NULL,
+  match_group varchar(20) NOT NULL CHECK (match_group IN ('ranked','not_in_document')),
+  risk_score numeric(5,2) NOT NULL,
+  risk_band varchar(12) NOT NULL,
+  payload jsonb NOT NULL,
+  ranked_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_risk_results_order ON risk_ranking_results (priority_rank);
+CREATE TABLE IF NOT EXISTS risk_ranking_missing (
+  missing_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  device_name text,
+  ip_address inet,
+  purpose text,
+  note text NOT NULL,
+  ranked_at timestamptz NOT NULL DEFAULT now()
+);
+-- Idempotent migration for databases that already had this table created by an
+-- earlier revision of this file.
+ALTER TABLE risk_ranking_missing ADD COLUMN IF NOT EXISTS criticality_category text;
+ALTER TABLE risk_ranking_missing ADD COLUMN IF NOT EXISTS criticality_value integer;
+
+-- Cross-network discovery.
+-- The scanner sits on one network. Routers and switches it can already see are
+-- asked, over read-only SNMP, which other networks hang off them. A detected
+-- network is knowledge, not inventory: no device from an unscanned network is
+-- ever written to `assets`. estimated_device_count is a count derived from an
+-- ARP or MAC table and is explicitly an estimate.
+CREATE TABLE IF NOT EXISTS networks (
+  network_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  -- Nullable: a VLAN the switch reports with no IP information has no subnet.
+  cidr cidr,
+  vlan_id integer,
+  label text,
+  is_local boolean NOT NULL DEFAULT false,
+  -- Approved networks are included in every automatic scan
+  approved boolean NOT NULL DEFAULT false,
+  approved_by varchar(128),
+  approved_at timestamptz,
+  -- Which device and which MIB each piece of evidence came from, so a network
+  -- learned from several routers keeps every source rather than only the last.
+  sources jsonb NOT NULL DEFAULT '[]'::jsonb,
+  estimated_device_count integer,
+  count_method varchar(12) CHECK (count_method IN ('arp_table','mac_table','scan')),
+  first_seen timestamptz NOT NULL DEFAULT now(),
+  last_seen timestamptz NOT NULL DEFAULT now(),
+  status varchar(12) NOT NULL DEFAULT 'detected' CHECK (status IN ('detected','scanned')),
+  last_scanned_at timestamptz
+);
+-- A VLAN is identified by its id; a routed network by its CIDR. Either alone
+-- may be null, so neither is unique on its own.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_networks_cidr ON networks (cidr) WHERE cidr IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_networks_vlan ON networks (vlan_id) WHERE vlan_id IS NOT NULL;
+
+-- Audit trail for network approval decisions
+CREATE TABLE IF NOT EXISTS network_approvals (
+  approval_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  network_id uuid NOT NULL REFERENCES networks(network_id) ON DELETE CASCADE,
+  approved boolean NOT NULL,
+  approved_by varchar(128) NOT NULL,
+  approved_at timestamptz NOT NULL DEFAULT now(),
+  reason text
+);
+CREATE INDEX IF NOT EXISTS idx_network_approvals_network ON network_approvals(network_id, approved_at DESC);
+
+-- Every user-initiated deeper scan is recorded, including the fact that the
+-- caller was asked to confirm authorization first.
+CREATE TABLE IF NOT EXISTS network_scan_requests (
+  request_id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  network_id uuid NOT NULL REFERENCES networks(network_id) ON DELETE CASCADE,
+  requested_by varchar(128) NOT NULL DEFAULT 'unknown',
+  requested_at timestamptz NOT NULL DEFAULT now(),
+  confirmed_authorization boolean NOT NULL DEFAULT false,
+  status varchar(16) NOT NULL DEFAULT 'accepted' CHECK (status IN ('accepted','rejected','running','completed','failed')),
+  scan_session_id uuid REFERENCES scan_sessions(id) ON DELETE SET NULL,
+  rejection_reason text
+);
+CREATE INDEX IF NOT EXISTS idx_network_scan_requests_network ON network_scan_requests(network_id, requested_at DESC);
+
+-- Read-only SNMP credentials may be overridden per device. The values are
+-- never selected into an API response and never logged. SNMPv3 is not yet
+-- supported by the stdlib client, so the v3 columns are recorded only.
+CREATE TABLE IF NOT EXISTS snmp_device_credentials (
+  asset_id uuid PRIMARY KEY REFERENCES assets(asset_id) ON DELETE CASCADE,
+  community text,
+  v3_username text,
+  v3_security_level varchar(16),
+  v3_auth_protocol varchar(16),
+  v3_auth_key text,
+  v3_priv_protocol varchar(16),
+  v3_priv_key text,
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- Which network an asset belongs to, decided by IP-in-CIDR. Nullable: an asset
+-- may be on the local network, on a scanned remote network, or (for a VLAN with
+-- no IP information) unattributable.
+ALTER TABLE assets ADD COLUMN IF NOT EXISTS network_id uuid REFERENCES networks(network_id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_assets_network ON assets(network_id);
+
+-- A scan session records the network it targeted, so a remote scan is
+-- attributable and the local scan keeps its existing subnet column.
+ALTER TABLE scan_sessions ADD COLUMN IF NOT EXISTS network_id uuid REFERENCES networks(network_id) ON DELETE SET NULL;
+ALTER TABLE scan_sessions ADD COLUMN IF NOT EXISTS target_cidr cidr;
+
+-- Per-VLAN reachability. A switch routinely advertises VLANs that have no
+-- routed path from the scanner (unused, voice, or an isolated L2 segment). Those
+-- are knowledge only: they are still listed, but never as scannable, and never
+-- scanned. Presenting them as scannable would turn "could not be reached at all"
+-- into a misleading "scanned, 0 devices found".
+ALTER TABLE networks ADD COLUMN IF NOT EXISTS is_scannable boolean NOT NULL DEFAULT false;
+-- Shown verbatim as the disabled button's explanation when is_scannable is false.
+ALTER TABLE networks ADD COLUMN IF NOT EXISTS reachability_reason text;
+-- How the VLAN was tied to a CIDR: fdb_port, default_vlan_single_connected_subnet.
+ALTER TABLE networks ADD COLUMN IF NOT EXISTS subnet_evidence text;
+-- Interfaces the VLAN's learned MACs sit behind, i.e. the VLAN -> subnet link.
+ALTER TABLE networks ADD COLUMN IF NOT EXISTS if_indexes integer[] NOT NULL DEFAULT '{}';
+-- Why the system believes this network exists and is reachable.
+--   direct = attached to a queried router/switch's own interface (single-router case)
+--   routed = reached through one or more next-hop routers found in a routing table
+ALTER TABLE networks ADD COLUMN IF NOT EXISTS reachability_path varchar(16);
+-- The actual chain, so the claim is inspectable rather than a bare CIDR:
+-- [{router_ip, next_hop, route_type, route_source}, ...]
+ALTER TABLE networks ADD COLUMN IF NOT EXISTS reachability_hops jsonb NOT NULL DEFAULT '[]'::jsonb;

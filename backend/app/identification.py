@@ -23,6 +23,7 @@ from .config import settings
 SOURCE_CONFIDENCE = {
     "dhcp_lease": "high",
     "snmp": "high",
+    "nmap_os_detection": "medium-high",
     "os_signature": "medium",
     "reverse_dns": "medium",
     "netbios": "medium",
@@ -30,7 +31,9 @@ SOURCE_CONFIDENCE = {
     "hostname_hint": "low",
     "device_text": "medium",
     "service_heuristic": "low",
+    "mac_oui": "low",
     "nmap_heuristic": "low",
+    "none": "none",
 }
 
 # Authoritative sources beat inferred ones even if the operator's priority list

@@ -22,14 +22,29 @@ class ScanStart(BaseModel):
     durationMinutes: int | None = Field(default=None, ge=1, le=1440)
 
 
+class NetworkScanRequest(BaseModel):
+    """A per-VLAN cross-network scan request.
+
+    `confirmed_authorization` is not advisory: the endpoint refuses to scan
+    without it, and records the answer either way so the audit trail shows
+    whether authorization was actually confirmed for this specific VLAN.
+    """
+    confirmed_authorization: bool = Field(default=False)
+    durationMinutes: int | None = Field(default=None, ge=1, le=1440)
+
+
 class AssetUpdate(BaseModel):
     status: AssetStatus | None = None
     device_type: DeviceType | None = None
-    criticality: AssetCriticality | None = None
-    exposure: AssetExposure | None = None
 
 
 class CriticalityUpdate(BaseModel):
+    """Kept so the documented Layer 8 request shape still validates.
+
+    Per-device criticality is no longer settable by hand: organizational
+    criticality now comes from the uploaded asset document, and exposure is a
+    single network-wide setting because the network is flat.
+    """
     criticality_category: str
 
 

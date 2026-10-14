@@ -8,6 +8,11 @@ export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localho
 
 const http = axios.create({
   baseURL: API_BASE_URL,
+  // Without this a request that never gets a response (backend restarting,
+  // dropped connection) stays pending forever. The scan button is disabled
+  // while a mutation is pending, so that left it permanently greyed out with
+  // no way back except reloading the page.
+  timeout: 30_000,
 })
 
 function delay(ms) {
@@ -23,6 +28,10 @@ export async function getDevices(filters = {}) {
   if (filters.status) params.status = filters.status
   if (filters.deviceType) params.type = filters.deviceType
   if (filters.scanId) params.scan_id = filters.scanId
+  if (filters.last24h) params.last24h = 'true'
+  if (filters.networkId) params.network_id = filters.networkId
+  if (filters.latestScanPerNetwork !== undefined) params.latestScanPerNetwork = filters.latestScanPerNetwork ? 'true' : 'false'
+  if (filters.directProbeOnly !== undefined) params.directProbeOnly = filters.directProbeOnly ? 'true' : 'false'
   const { data } = await http.get('/devices', { params })
   return data.data
 }
@@ -62,6 +71,11 @@ export async function getScanHistory() {
 
 export async function getScanSessions() {
   const { data } = await http.get('/scan/sessions')
+  return data.data
+}
+
+export async function getLatestCompletedSession() {
+  const { data } = await http.get('/scan/sessions/latest')
   return data.data
 }
 
@@ -207,24 +221,62 @@ export async function getRiskAssets() {
   return data.data
 }
 
+export async function getRiskReadiness() {
+  const { data } = await http.get('/risk/readiness')
+  return data.data
+}
+
+export async function calculateRisk() {
+  const { data } = await http.post('/risk/calculate')
+  return data.data
+}
+
 export async function getRiskSummary() {
   const { data } = await http.get('/risk/summary')
   return data.data
 }
 
-export async function uploadRiskPolicy(endpoint, file) {
+// The single asset document that drives ranking. The backend rejects the whole
+// file if any row is invalid and returns every problem, so this rethrows with
+// the full error list attached for the page to render verbatim.
+export async function uploadAssetDocument(file) {
   const formData = new FormData()
   formData.append('file', file)
-  const { data } = await http.post(endpoint, formData)
-  return data
-}
-
-export async function uploadAssetCriticality(file) {
-  return uploadRiskPolicy('/assets/criticality/upload', file)
+  try {
+    const { data } = await http.post('/risk/policy/asset-document', formData)
+    return data
+  } catch (error) {
+    const detail = error.response?.data?.detail
+    error.validationErrors = Array.isArray(detail?.errors) ? detail.errors : []
+    error.validationMessage = detail?.message || error.message
+    throw error
+  }
 }
 
 export async function getScanNetwork() {
   const { data } = await http.get('/scan/network')
+  return data.data
+}
+
+// Detected VLANs/subnets. The response is grouped (networks + summary +
+// auto-derived targets), NOT a flat array.
+export async function getNetworks() {
+  const { data } = await http.get('/networks')
+  return data.data
+}
+
+export async function detectNetworks() {
+  const { data } = await http.post('/networks/detect')
+  return data.data
+}
+
+export async function scanNetworkById(networkId, payload) {
+  const { data } = await http.post(`/networks/${networkId}/scan`, payload)
+  return data.data
+}
+
+export async function scanAllNetworks(payload) {
+  const { data } = await http.post('/networks/scan-all', payload)
   return data.data
 }
 

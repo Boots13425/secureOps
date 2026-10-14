@@ -1,7 +1,7 @@
 import unittest
-from ipaddress import ip_network
 
-from app.risk_engine import policy_criticality, policy_exposure, score_asset, score_label
+from app.config import settings
+from app.risk_engine import CRITICALITY_CATEGORY_VALUES, CRITICALITY_LABELS, CRITICALITY_VALUES, score_asset, score_label
 
 
 class RiskEngineTests(unittest.TestCase):
@@ -22,26 +22,20 @@ class RiskEngineTests(unittest.TestCase):
         self.assertEqual(score, 80)
         self.assertEqual(label, "High")
 
-    def test_policy_criticality_normalizes_mac_delimiters(self):
-        values = {"00:11:22:33:44:55": "critical", "10.0.0.5": "low"}
-        self.assertEqual(policy_criticality(values, ["00-11-22-33-44-55", "10-0-0-5"]), (100, "critical_service"))
+    def test_exposure_is_a_single_network_wide_value(self):
+        # The network is flat, so there is no per-subnet lookup and no
+        # "unmapped" case: every asset is scored with the same exposure.
+        self.assertEqual(settings.network_exposure_value, 65)
+        low = score_asset(50, 50, 0, settings.network_exposure_value, 50)
+        high = score_asset(50, 50, 0, settings.network_exposure_value, 85)
+        self.assertGreater(high[0], low[0])
 
-    def test_policy_criticality_matches_dashed_ipv4_identifier(self):
-        values = {"10.0.0.5": "high"}
-        self.assertEqual(policy_criticality(values, ["10-0-0-5"]), (70, "privileged_workstation"))
-
-    def test_policy_exposure_prefers_most_specific_subnet(self):
-        policies = [
-            {"network": ip_network("10.0.0.0/8"), "context_label": "General staff/user network"},
-            {"network": ip_network("10.1.0.0/16"), "context_label": "Internet-facing/reachable"},
-        ]
-        self.assertEqual(policy_exposure("10.1.2.3", policies), (100, False, "Internet-facing/reachable"))
-
-    def test_policy_defaults(self):
-        self.assertEqual(policy_criticality({}, ("host", "10.0.0.1", None)), (50, "standard_workstation"))
-        exposure, unmapped, context = policy_exposure("10.1.2.3", [{"network": ip_network("10.0.0.0/8"), "context_label": "Internet-facing/reachable"}])
-        self.assertEqual((exposure, unmapped, context), (100, False, "Internet-facing/reachable"))
-        self.assertEqual(policy_exposure("192.168.1.1", []), (50, True, None))
+    def test_category_values_match_the_criticality_table(self):
+        # An asset document row's criticality_value must be exactly the value
+        # the formula expects for the category that produced it.
+        for label, value in CRITICALITY_CATEGORY_VALUES.items():
+            key = next(key for key, name in CRITICALITY_LABELS.items() if name == label)
+            self.assertEqual(CRITICALITY_VALUES[key], value)
 
     def test_score_matches_manual_weighted_recomputation(self):
         score, label = score_asset(72.0, 18.0, 0, 65, 85)
